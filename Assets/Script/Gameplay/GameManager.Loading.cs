@@ -7,6 +7,7 @@ using YARG.Core;
 using YARG.Core.Audio;
 using YARG.Core.Chart;
 using YARG.Core.Engine;
+using YARG.Core.Game;
 using YARG.Core.Logging;
 using YARG.Core.Replays;
 using YARG.Gameplay.HUD;
@@ -232,6 +233,26 @@ namespace YARG.Gameplay
 
             // Spawn players
             CreatePlayers();
+
+            // Online link: report that we're loaded and wait for the start to be scheduled.
+            // Friends' players are added here, before anything below snapshots the player list.
+            var link = LinkController.Instance;
+            bool linkedStart = false;
+            if (_loadState != LoadFailureState.Error && link != null && link.ShouldHoldForStart &&
+                !IsPractice && ReplayInfo == null)
+            {
+                switch (await link.WaitForStartSignal(this, context))
+                {
+                    case LinkController.StartResult.Cancelled:
+                        global.LoadScene(SceneIndex.Menu);
+                        return;
+                    case LinkController.StartResult.Synced:
+                        linkedStart = true;
+                        CreateRemotePlayers(link.TakeRemotePlayers(Song));
+                        break;
+                }
+            }
+
             YargLogger.LogFormatDebug("Calculating star cutoffs for {0} players", _players.Count);
             EngineManager.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(_players.ConvertAll(p => p.BaseEngine.StarScoreThresholds));
             YargLogger.LogFormatDebug("Star score thresholds: {0}", string.Join(", ", EngineManager.StarScoreThresholds));
@@ -303,15 +324,10 @@ namespace YARG.Gameplay
             YargLogger.LogFormatDebug("Audio calibration: {0}, video calibration: {1}, song offset: {2}",
                 _songRunner.AudioCalibration, _songRunner.VideoCalibration, _songRunner.SongOffset);
 
-            // Online link: hold on the loading screen until every linked player is ready
-            var link = LinkController.Instance;
-            if (link != null && link.ShouldHoldForStart && !IsPractice && ReplayInfo == null)
+            // Online link: start at the same moment as everyone else
+            if (linkedStart)
             {
-                if (!await link.WaitForSyncedStart(Song, context))
-                {
-                    global.LoadScene(SceneIndex.Menu);
-                    return;
-                }
+                await link.WaitForStartTime();
             }
 
             // Loaded, enable updates
@@ -502,17 +518,7 @@ namespace YARG.Gameplay
                     if (player.Profile.GameMode != GameMode.Vocals)
                     {
                         highwayIndex++;
-                        var prefab = player.Profile.GameMode switch
-                        {
-                            GameMode.FiveFretGuitar => _fiveFretGuitarPrefab,
-                            GameMode.SixFretGuitar  => _sixFretGuitarPrefab,
-                            GameMode.FourLaneDrums  => _fourLaneDrumsPrefab,
-                            GameMode.FiveLaneDrums  => _fiveLaneDrumsPrefab,
-                            GameMode.EliteDrums     => Song.HasInstrument(Instrument.FiveLaneDrums) ? _fiveLaneDrumsPrefab : _fourLaneDrumsPrefab,
-                            GameMode.ProKeys        => player.Profile.CurrentInstrument is Instrument.ProKeys ? _proKeysPrefab : _fiveLaneKeysPrefab,
-                            GameMode.ProGuitar      => _proGuitarPrefab,
-                            _                       => null
-                        };
+                        var prefab = GetTrackPrefab(player.Profile);
 
                         // Skip if there's no prefab for the game mode
                         if (prefab == null) continue;
@@ -570,6 +576,8 @@ namespace YARG.Gameplay
                         _players.Add(vocalsPlayer);
                     }
 
+                    _highwayCount = highwayIndex + 1;
+
                     // Add (or increase total of) the stem state
                     var hasStem = false;
                     foreach (var stem in player.Profile.CurrentInstrument.ToSongStems())
@@ -600,6 +608,61 @@ namespace YARG.Gameplay
                 _loadState = LoadFailureState.Error;
                 _loadFailureMessage = "Failed to load song!";
                 YargLogger.LogException(ex, "Failed to load song!");
+            }
+        }
+
+        private GameObject GetTrackPrefab(YargProfile profile)
+        {
+            return profile.GameMode switch
+            {
+                GameMode.FiveFretGuitar => _fiveFretGuitarPrefab,
+                GameMode.SixFretGuitar  => _sixFretGuitarPrefab,
+                GameMode.FourLaneDrums  => _fourLaneDrumsPrefab,
+                GameMode.FiveLaneDrums  => _fiveLaneDrumsPrefab,
+                GameMode.EliteDrums     => Song.HasInstrument(Instrument.FiveLaneDrums) ? _fiveLaneDrumsPrefab : _fourLaneDrumsPrefab,
+                GameMode.ProKeys        => profile.CurrentInstrument is Instrument.ProKeys ? _proKeysPrefab : _fiveLaneKeysPrefab,
+                GameMode.ProGuitar      => _proGuitarPrefab,
+                _                       => null
+            };
+        }
+
+        /// <summary>
+        /// Add a highway for each of a friend's players over the online link. They play back the inputs
+        /// streamed from the friend's game, like a replay that's still being recorded.
+        /// </summary>
+        private void CreateRemotePlayers(List<(ReplayFrame Frame, ReplayData Data, RemoteInputFeed Feed)> remotePlayers)
+        {
+            foreach (var (frame, data, feed) in remotePlayers)
+            {
+                GameObject playerObject = null;
+                try
+                {
+                    var player = new YargPlayer(frame, data, feed);
+                    if (player.Profile.GameMode == GameMode.Vocals) continue;
+
+                    var prefab = GetTrackPrefab(player.Profile);
+                    if (prefab == null) continue;
+
+                    int highwayIndex = _highwayCount;
+                    playerObject = Instantiate(prefab,
+                        new Vector3(highwayIndex * TRACK_SPACING_X, 100f, 0f), prefab.transform.rotation);
+
+                    var trackPlayer = playerObject.GetComponent<TrackPlayer>();
+                    var trackView = _trackViewManager.CreateTrackView();
+                    trackPlayer.Initialize(highwayIndex, player, Chart, trackView, _mixer, null);
+
+                    _players.Add(trackPlayer);
+                    _trackViewManager.AddTrackPlayer(trackPlayer);
+                    _highwayCount++;
+
+                    YargLogger.LogFormatInfo("Link: added {0}'s {1} track", player.Profile.Name,
+                        player.Profile.CurrentInstrument);
+                }
+                catch (Exception ex)
+                {
+                    YargLogger.LogException(ex, $"Link: failed to add {feed.Name}'s track");
+                    if (playerObject != null) Destroy(playerObject);
+                }
             }
         }
     }

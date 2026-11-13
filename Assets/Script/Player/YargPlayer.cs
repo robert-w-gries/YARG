@@ -7,6 +7,7 @@ using YARG.Core.Input;
 using YARG.Core.IO;
 using YARG.Core.Replays;
 using YARG.Input;
+using YARG.Integration.Link;
 using YARG.Settings.Customization;
 using YARG.Themes;
 
@@ -49,6 +50,14 @@ namespace YARG.Player
         public int ReplayIndex = -1;
 
         /// <summary>
+        /// Inputs streamed from a friend's game over the online link, or <c>null</c> for a local player.
+        /// A remote player is also a replay player: it has no bindings and plays back the inputs it receives.
+        /// </summary>
+        public RemoteInputFeed RemoteFeed { get; private set; }
+
+        public bool IsRemote => RemoteFeed != null;
+
+        /// <summary>
         /// Overrides the engine parameters in the gameplay player.
         /// This is only used when loading replays.
         /// </summary>
@@ -62,6 +71,12 @@ namespace YARG.Player
             Profile = profile;
             Bindings = bindings;
             IsReplay = false;
+        }
+
+        public YargPlayer(ReplayFrame frame, ReplayData replay, RemoteInputFeed remoteFeed)
+            : this(frame, replay)
+        {
+            RemoteFeed = remoteFeed;
         }
 
         public YargPlayer(ReplayFrame frame, ReplayData replay)
