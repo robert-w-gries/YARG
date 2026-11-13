@@ -406,6 +406,9 @@ namespace YARG.Gameplay.Player
 
         public override void SetStemMuteState(bool muted)
         {
+            // A friend's mistakes over the online link don't mute our audio
+            if (IsRemote) return;
+
             SetDrumStemMuteState(SongStem.Drums1, muted);
             SetDrumStemMuteState(SongStem.Drums2, muted);
             SetDrumStemMuteState(SongStem.Drums3, muted);
@@ -875,6 +878,8 @@ namespace YARG.Gameplay.Player
 
         private void PlayDrumSoundEffect(DrumsAction action, float velocity)
         {
+            if (IsRemote) return;
+
             int actionIndex = (int) action;
 
             if (actionIndex == (int) DrumsAction.WildcardPad)

@@ -647,6 +647,9 @@ namespace YARG.Gameplay.Player
 
         public override void Rewind(double visualTime)
         {
+            // A friend's track isn't rewound when we pause; their engine keeps its state
+            if (IsRemote) return;
+
             for (int index = NotePool.AllSpawned.Count - 1; index >= 0; index--)
             {
                 var poolable = NotePool.AllSpawned[index];
@@ -1316,7 +1319,7 @@ namespace YARG.Gameplay.Player
 
         protected virtual void OnNoteHit(int index, TNote note)
         {
-            if (!Player.Profile.IsBot)
+            if (!Player.Profile.IsBot && !IsRemote)
             {
                 _autoCalibrator.RecordAccuracy(Engine.CurrentTime, note.Time);
             }
@@ -1364,7 +1367,7 @@ namespace YARG.Gameplay.Player
 
                 if (LastCombo >= 10)
                 {
-                    GlobalAudioHandler.PlaySoundEffect(SfxSample.NoteMiss);
+                    if (!IsRemote) GlobalAudioHandler.PlaySoundEffect(SfxSample.NoteMiss);
                     CameraPositioner.Punch();
                 }
 

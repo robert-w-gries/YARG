@@ -123,6 +123,23 @@ namespace YARG.Gameplay.Player
         public bool IsActive => Player.IsActive;
         public bool IsBot    => Player.Profile.IsBot;
 
+        /// <summary>
+        /// Whether this player mirrors a friend's player over the online link.
+        /// </summary>
+        public bool IsRemote => Player.IsRemote;
+
+        /// <summary>
+        /// How far behind the song this player is drawn and simulated, in seconds.
+        /// Always 0 except for remote players, which run behind by the network delay.
+        /// </summary>
+        public double TimeLag { get; private set; }
+
+        /// <summary>
+        /// The visual time this player's track is drawn at. Use this instead of
+        /// <see cref="GameManager.VisualTime"/> for anything positioned on the track.
+        /// </summary>
+        public double PlayerVisualTime => GameManager.VisualTime - TimeLag;
+
         protected override void GameplayAwake()
         {
             _replayInputs = new List<GameInput>();
@@ -139,7 +156,7 @@ namespace YARG.Gameplay.Player
             //Ensure hud elements get repositioned on screen size change
             if (ScreenSizeDetector.HasScreenSizeChanged)
             {
-                UpdateVisuals(GameManager.VisualTime);
+                UpdateVisuals(PlayerVisualTime);
             }
         }
 
@@ -185,7 +202,7 @@ namespace YARG.Gameplay.Player
                 YargLogger.LogFormatDebug("Initialized replay inputs with {0} inputs", _replayInputs.Count);
             }
 
-            if (InputViewer != null)
+            if (InputViewer != null && !player.IsRemote)
             {
                 InputViewer.SetColors(player.ColorProfile);
                 InputViewer.ResetButtons();
@@ -201,12 +218,39 @@ namespace YARG.Gameplay.Player
                 return;
             }
 
+            if (IsRemote)
+            {
+                RemoteGameplayUpdate();
+                return;
+            }
+
             if (!GameManager.Rewinding)
             {
                 UpdateInputs(GameManager.InputTime);
             }
 
             UpdateVisuals(GameManager.VisualTime);
+        }
+
+        private void RemoteGameplayUpdate()
+        {
+            var feed = Player.RemoteFeed;
+            feed.DrainInto(_replayInputs);
+
+            // Only advance the engine as far as the friend's game has sent inputs for,
+            // so it never misses a note whose input is still in flight
+            double inputTime = GameManager.InputTime;
+            if (!GameManager.Rewinding && feed.TryGetPlaybackTime(inputTime, Time.unscaledDeltaTime, out double time))
+            {
+                TimeLag = inputTime - time;
+                UpdateInputs(time);
+            }
+            else if (!feed.HasData)
+            {
+                TimeLag = feed.Delay;
+            }
+
+            UpdateVisuals(PlayerVisualTime);
         }
 
         protected abstract void UpdateVisuals(double visualTime);
@@ -276,7 +320,7 @@ namespace YARG.Gameplay.Player
             // Video offset is already accounted for
             time += InputCalibration;
 
-            if (Player.IsReplay && GameManager.ReplayInfo != null)
+            if ((Player.IsReplay && GameManager.ReplayInfo != null) || IsRemote)
             {
                 while (_replayInputIndex < ReplayInputs.Count)
                 {
@@ -406,7 +450,7 @@ namespace YARG.Gameplay.Player
 
         protected virtual void OnStarPowerPhraseHit()
         {
-            if (!GameManager.Paused && !GameManager.IsSeekingReplay)
+            if (!GameManager.Paused && !GameManager.IsSeekingReplay && !IsRemote)
             {
                 GlobalAudioHandler.PlaySoundEffect(SfxSample.StarPowerAward);
             }
@@ -414,7 +458,7 @@ namespace YARG.Gameplay.Player
 
         protected virtual void OnStarPowerReady()
         {
-            if (!GameManager.Paused && !GameManager.IsSeekingReplay)
+            if (!GameManager.Paused && !GameManager.IsSeekingReplay && !IsRemote)
             {
                 GlobalAudioHandler.PlaySoundEffect(SfxSample.StarPowerReady);
             }
@@ -434,7 +478,7 @@ namespace YARG.Gameplay.Player
                 deploySample = SfxSample.StarPowerDeployCrowd;
             }
 
-            if (!GameManager.Paused)
+            if (!GameManager.Paused && !IsRemote)
             {
                 GlobalAudioHandler.PlaySoundEffect(active
                     ? deploySample
@@ -455,7 +499,7 @@ namespace YARG.Gameplay.Player
 
         protected virtual void OnInputQueued(GameInput input)
         {
-            if (InputViewer != null)
+            if (InputViewer != null && !IsRemote)
             {
                 InputViewer.OnInput(input);
             }

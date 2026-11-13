@@ -206,7 +206,16 @@ namespace YARG.Gameplay
         private BandComboType _bandComboType;
 
         private IEnumerable<BasePlayer> ActivePlayers => _players.Where(player => player.IsActive);
-        private        bool HasBots            => ActivePlayers.Any(player => player.IsBot);
+
+        /// <summary>
+        /// Active players on this machine, i.e. not friends' players over the online link.
+        /// Only these count towards local scores.
+        /// </summary>
+        private IEnumerable<BasePlayer> ActiveLocalPlayers => ActivePlayers.Where(player => !player.IsRemote);
+
+        private int _highwayCount;
+
+        private        bool HasBots            => ActiveLocalPlayers.Any(player => player.IsBot);
         private static bool SaveScoresWithBots => SettingsManager.Settings.SaveScoresWithBots.Value;
 
         private void Awake()
@@ -692,11 +701,7 @@ namespace YARG.Gameplay
                 BandScore = BandScore,
                 BandStars = (int) BandStars,
 
-                // TODO: When online comes out, change
-                // .Where(player => !player.Player.Profile.IsBot)
-                // to:
-                // .Where(player => !(player.Player.Profile.IsBot || player.Player.IsRemote))
-                MeanAverageOffset = ActivePlayers
+                MeanAverageOffset = ActiveLocalPlayers
                     .Where(player => !player.IsBot)
                     .Select(player => player.BaseStats.GetAverageOffset())
                     .DefaultIfEmpty(0)
@@ -714,7 +719,7 @@ namespace YARG.Gameplay
 
         private void RecordScores(ReplayInfo replayInfo)
         {
-            if (!ScoreContainer.IsBandScoreValid(SongSpeed, ActivePlayers.Select(player => player.Player)))
+            if (!ScoreContainer.IsBandScoreValid(SongSpeed, ActiveLocalPlayers.Select(player => player.Player)))
             {
                 return;
             }
@@ -722,7 +727,7 @@ namespace YARG.Gameplay
             // Get all of the individual player score entries
             var playerEntries = new List<PlayerScoreRecord>();
             var starScoreCutoffsList = new List<int[]>();
-            foreach (var player in ActivePlayers)
+            foreach (var player in ActiveLocalPlayers)
             {
                 var profile = player.Player.Profile;
 
@@ -755,7 +760,7 @@ namespace YARG.Gameplay
                 starScoreCutoffsList.Add(player.BaseEngine.StarScoreThresholds);
             }
 
-            var validScoreCount = ActivePlayers.Count(player => ScoreContainer.IsSoloScoreValid(SongSpeed, player.Player));
+            var validScoreCount = ActiveLocalPlayers.Count(player => ScoreContainer.IsSoloScoreValid(SongSpeed, player.Player));
             if (validScoreCount == 0)
             {
                 return;
@@ -795,7 +800,7 @@ namespace YARG.Gameplay
             else
             {
                 // No bots, use live scores directly
-                foreach (var player in ActivePlayers)
+                foreach (var player in ActiveLocalPlayers)
                 {
                     humanBandScore += player.Score + player.BaseStats.BandBonusScore;
                 }
