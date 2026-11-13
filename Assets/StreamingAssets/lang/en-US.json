@@ -2530,6 +2530,10 @@
                 "Name": "Enable UDP data stream",
                 "Description": "Enables sending of UDP information packets over the network, for software such as YALCY."
             },
+            "LinkEnable": {
+                "Name": "Enable online link",
+                "Description": "Connects to the yarg-link sidecar to share scores with friends and start songs together. While a friend is connected, songs wait on the loading screen until everyone is ready."
+            },
             "RB3EEnabled": {
                 "Name": "Enable RB3E Stage Kit data stream",
                 "Description": "Enables sending of RB3E style stage kit information packets over the network, for hardware such as StageKitPied."
