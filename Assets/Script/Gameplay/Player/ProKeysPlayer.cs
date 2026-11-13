@@ -527,6 +527,9 @@ namespace YARG.Gameplay.Player
 
         public override void SetStemMuteState(bool muted)
         {
+            // A friend's mistakes over the online link don't mute our audio
+            if (IsRemote) return;
+
             if (IsStemMuted != muted)
             {
                 GameManager.ChangeStemMuteState(SongStem.Keys, muted);

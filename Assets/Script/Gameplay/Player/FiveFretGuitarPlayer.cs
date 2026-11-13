@@ -460,6 +460,9 @@ namespace YARG.Gameplay.Player
 
         public override void SetStemMuteState(bool muted)
         {
+            // A friend's mistakes over the online link don't mute our audio
+            if (IsRemote) return;
+
             if (IsStemMuted != muted)
             {
                 GameManager.ChangeStemMuteState(_stem, muted);
@@ -635,7 +638,7 @@ namespace YARG.Gameplay.Player
                 return;
             }
 
-            if (SettingsManager.Settings.OverstrumAndOverhitSoundEffects.Value)
+            if (SettingsManager.Settings.OverstrumAndOverhitSoundEffects.Value && !IsRemote)
             {
                 const int MIN = (int) SfxSample.Overstrum1;
                 const int MAX = (int) SfxSample.Overstrum4;
