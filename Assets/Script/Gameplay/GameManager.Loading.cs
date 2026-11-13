@@ -11,6 +11,7 @@ using YARG.Core.Logging;
 using YARG.Core.Replays;
 using YARG.Gameplay.HUD;
 using YARG.Gameplay.Player;
+using YARG.Integration.Link;
 using YARG.Menu;
 using YARG.Menu.Persistent;
 using YARG.Menu.Settings;
@@ -301,6 +302,17 @@ namespace YARG.Gameplay
             // Log constant values
             YargLogger.LogFormatDebug("Audio calibration: {0}, video calibration: {1}, song offset: {2}",
                 _songRunner.AudioCalibration, _songRunner.VideoCalibration, _songRunner.SongOffset);
+
+            // Online link: hold on the loading screen until every linked player is ready
+            var link = LinkController.Instance;
+            if (link != null && link.ShouldHoldForStart && !IsPractice && ReplayInfo == null)
+            {
+                if (!await link.WaitForSyncedStart(Song, context))
+                {
+                    global.LoadScene(SceneIndex.Menu);
+                    return;
+                }
+            }
 
             // Loaded, enable updates
             enabled = true;

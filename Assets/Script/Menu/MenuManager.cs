@@ -79,6 +79,11 @@ namespace YARG.Menu
             }
         }
 
+        /// <summary>
+        /// The menu at the top of the stack, or <see cref="Menu.None"/> if none is open.
+        /// </summary>
+        public Menu CurrentMenu => _openMenus.TryPeek(out var menu) ? menu : Menu.None;
+
         public MenuObject PushMenu(Menu menu, bool setActiveImmediate = true)
         {
             bool hideOther;
