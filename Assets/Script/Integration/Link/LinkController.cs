@@ -1,14 +1,11 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading;
 using Cysharp.Threading.Tasks;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using YARG.Core;
@@ -21,6 +18,8 @@ using YARG.Core.Song;
 using YARG.Gameplay;
 using YARG.Gameplay.HUD;
 using YARG.Gameplay.Player;
+using YARG.Integration.Link.Session;
+using YARG.Integration.Link.Transport;
 using YARG.Menu;
 using YARG.Menu.Persistent;
 using YARG.Settings;
@@ -29,39 +28,37 @@ using YARG.Song;
 namespace YARG.Integration.Link
 {
     /// <summary>
-    /// Experimental bridge to the <c>yarg-link</c> sidecar, which connects friends' games over iroh.
+    /// Online play with friends: the gameplay side of a <see cref="LinkSession"/>.
     /// </summary>
     /// <remarks>
-    /// Talks JSON over localhost UDP, one message per datagram (see yarg-link's <c>protocol.rs</c>).
-    /// <list type="bullet">
-    /// <item>Game → sidecar: <c>status</c> (heartbeat, song, scores), <c>ready</c>, <c>decline</c>,
-    /// <c>broadcast</c> (opaque data for friends' games).</item>
-    /// <item>Sidecar → game: <c>ping</c>, <c>load_song</c>, <c>start</c>, <c>cancel</c>,
-    /// <c>peer</c> (a friend's broadcast), <c>peer_left</c>.</item>
-    /// </list>
-    /// Enabled by Settings › Experimental › "Enable online link". When enabled and at least one friend
-    /// is connected, gameplay holds at the loading screen until the sidecar sends a synced start.
     /// <para>
-    /// During a synced song each game broadcasts a <c>setup</c> (its players' profiles and engine
-    /// parameters, as replay data) when it's ready, then streams <c>inputs</c>: each player's recorded
-    /// inputs plus their score. The other games add a highway per friend's player that plays those
-    /// inputs back like a replay, so you see their notes being hit and missed, and show everyone's
-    /// score in a scoreboard.
+    /// Enabled by Settings › Experimental › "Enable online link". When enabled and at least one other member
+    /// is in the session, gameplay holds at the loading screen until the session schedules a synced start.
+    /// </para>
+    /// <para>
+    /// During a synced song each game broadcasts a <c>setup</c> (its players' profiles and engine parameters,
+    /// as replay data) when it's ready, then streams <c>inputs</c>: each player's recorded inputs plus their
+    /// score. The other games add a highway per friend's player that plays those inputs back like a replay,
+    /// so you see their notes being hit and missed, and show everyone's score in a scoreboard.
+    /// </para>
+    /// <para>
+    /// For now the session runs on <see cref="LoopbackLinkTransport"/> and is set up from the command line
+    /// (or environment variables, handy in the Editor). By default the game hosts on
+    /// <see cref="DEFAULT_PORT"/>. To join, pass <c>-link-join loopback:127.0.0.1:36120</c>
+    /// (<c>YARG_LINK_JOIN</c>). <c>-link-port</c> (<c>YARG_LINK_PORT</c>) picks the port, <c>-link-name</c>
+    /// (<c>YARG_LINK_NAME</c>) the name friends see, and <c>-link-lan</c> (<c>YARG_LINK_LAN=1</c>) accepts
+    /// connections from the local network.
     /// </para>
     /// </remarks>
     public class LinkController : MonoBehaviour
     {
-        /// <summary>The sidecar's game link port (yarg-link's <c>GAME_PORT</c>).</summary>
-        public const int SIDECAR_PORT = 36110;
-
-        /// <summary>The sidecar counts as gone after this long without a ping.</summary>
-        private const double SIDECAR_TIMEOUT = 3.0;
+        public const int DEFAULT_PORT = 36120;
 
         /// <summary>Give up on a synced start after this long and start alone.</summary>
         private const double MAX_WAIT_SECONDS = 120.0;
 
-        private const double STATUS_INTERVAL_GAMEPLAY = 0.1;
-        private const double STATUS_INTERVAL_IDLE     = 1.0;
+        /// <summary>A joiner tries to reach the host again this often.</summary>
+        private const double REJOIN_INTERVAL = 5.0;
 
         /// <summary>Send new inputs at most this often.</summary>
         private const double INPUTS_INTERVAL_MIN = 1.0 / 120.0;
@@ -72,21 +69,19 @@ namespace YARG.Integration.Link
         /// <summary>Bytes per input in the <c>inputs</c> message: time (double), action (int), value (int).</summary>
         private const int INPUT_SIZE = 16;
 
+        private const string KIND_SETUP  = "setup";
+        private const string KIND_INPUTS = "inputs";
+
         public static LinkController Instance { get; private set; }
 
         private static readonly Stopwatch Clock = Stopwatch.StartNew();
         private static double Now => Clock.Elapsed.TotalSeconds;
 
-        private readonly ConcurrentQueue<string> _incoming = new();
-
-        private UdpClient _client;
-        private Thread    _receiveThread;
-
-        private GameManager _gameManager;
-        private double      _nextStatusTime;
-
-        private int    _peers;
-        private double _lastPingTime = double.NegativeInfinity;
+        private LinkSession _session;
+        private string      _joinTicket;
+        private double      _nextOpenTime;
+        private double      _nextJoinTime = double.PositiveInfinity;
+        private string      _lastProblem;
 
         // Synced-start state, touched only on the main thread
         private bool    _waiting;
@@ -96,20 +91,21 @@ namespace YARG.Integration.Link
         // Song a friend asked us to load, while we're still in difficulty select
         private string _remoteRequestHash;
 
-        // Friends' player setups, by peer ID. Kept until we leave the song they were for.
+        // Friends' player setups, by member ID. Kept until we leave the song they were for.
         private readonly Dictionary<string, RemoteSetup> _remoteSetups = new();
 
         // The synced song we're sharing our inputs for, if any
-        private Session _session;
+        private SharedSong _shared;
 
         private GUIStyle _scoreboardStyle;
-
-        private bool SidecarAlive => Now - _lastPingTime < SIDECAR_TIMEOUT;
 
         /// <summary>
         /// Whether gameplay should hold at the loading screen for a synced start.
         /// </summary>
-        public bool ShouldHoldForStart => _client != null && SidecarAlive && _peers > 0;
+        public bool ShouldHoldForStart => _session is { IsConnected: true } && _session.Members.Count > 0;
+
+        /// <summary>The current session, if the link is enabled.</summary>
+        public LinkSession CurrentSession => _session;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Create()
@@ -117,6 +113,7 @@ namespace YARG.Integration.Link
             var go = new GameObject(nameof(LinkController));
             DontDestroyOnLoad(go);
             Instance = go.AddComponent<LinkController>();
+            Application.quitting += () => Instance?.Close();
         }
 
         private void Update()
@@ -126,32 +123,34 @@ namespace YARG.Integration.Link
             bool linkEnabled = SettingsManager.Settings?.LinkEnable.Value ?? false;
             if (!linkEnabled)
             {
-                if (_client != null) Close();
+                if (_session != null) Close();
                 return;
             }
 
-            if (_client == null) Open();
-
-            while (_incoming.TryDequeue(out var text))
+            if (_session == null)
             {
-                HandleMessage(text);
+                if (Now < _nextOpenTime) return;
+                Open();
+                if (_session == null) return;
             }
+
+            if (_joinTicket != null && !_session.IsConnected && Now >= _nextJoinTime)
+            {
+                _nextJoinTime = Now + REJOIN_INTERVAL;
+                Join();
+            }
+
+            _session.SetLocalScene(SceneName(GlobalVariables.Instance.CurrentScene));
+            _session.Update();
 
             CheckRemoteRequestAbandoned();
-            CheckSessionEnded();
-
-            if (Now >= _nextStatusTime)
-            {
-                bool inGameplay = GlobalVariables.Instance.CurrentScene == SceneIndex.Gameplay;
-                _nextStatusTime = Now + (inGameplay ? STATUS_INTERVAL_GAMEPLAY : STATUS_INTERVAL_IDLE);
-                SendStatus();
-            }
+            CheckSongEnded();
         }
 
         private void LateUpdate()
         {
             // After GameManager.Update, so this frame's inputs are recorded
-            if (_client != null && _session != null)
+            if (_session != null && _shared != null)
             {
                 SendInputs();
             }
@@ -162,20 +161,195 @@ namespace YARG.Integration.Link
             Close();
         }
 
+        #region Session
+
+        private void Open()
+        {
+            // Without a working setup, don't retry every frame
+            _nextOpenTime = Now + REJOIN_INTERVAL;
+
+            string join = CommandLineArgs.LinkJoin ?? Environment.GetEnvironmentVariable("YARG_LINK_JOIN");
+            int? port = CommandLineArgs.LinkPort;
+            if (port == null && int.TryParse(Environment.GetEnvironmentVariable("YARG_LINK_PORT"), out int envPort))
+            {
+                port = envPort;
+            }
+            bool lan = CommandLineArgs.LinkLan || Environment.GetEnvironmentVariable("YARG_LINK_LAN") == "1";
+            string name = CommandLineArgs.LinkName ?? Environment.GetEnvironmentVariable("YARG_LINK_NAME") ??
+                Environment.UserName;
+
+            var role = string.IsNullOrWhiteSpace(join) ? LinkRole.Host : LinkRole.Join;
+
+            ILinkTransport transport;
+            try
+            {
+                transport = CreateTransport(port ?? (role == LinkRole.Host ? DEFAULT_PORT : 0), lan);
+            }
+            catch (SocketException e) when (port == null && role == LinkRole.Host)
+            {
+                // Probably another instance on this machine; host on any free port instead
+                YargLogger.LogWarning($"Link: port {DEFAULT_PORT} is in use ({e.Message}), using another one");
+                try
+                {
+                    transport = CreateTransport(0, lan);
+                }
+                catch (SocketException e2)
+                {
+                    YargLogger.LogFormatError("Link: couldn't open a socket: {0}", e2.Message);
+                    return;
+                }
+            }
+            catch (SocketException e)
+            {
+                YargLogger.LogFormatError("Link: couldn't open a socket: {0}", e.Message);
+                ToastManager.ToastError($"Online link: couldn't open port {port}");
+                return;
+            }
+
+            var options = new LinkSessionOptions
+            {
+                GameVersion = GlobalVariables.Instance.CurrentVersion,
+                Name = name,
+            };
+            _session = new LinkSession(transport, role, options, () => Now)
+            {
+                LogInfo = message => YargLogger.LogInfo(message),
+                LogWarning = message => YargLogger.LogWarning(message),
+            };
+
+            _session.MemberJoined += OnMemberJoined;
+            _session.MemberLeft += OnMemberLeft;
+            _session.LoadSongRequested += HandleLoadSong;
+            _session.StartScheduled += OnStartScheduled;
+            _session.StartCancelled += OnStartCancelled;
+            _session.GameDataReceived += HandleGameData;
+            _session.Disconnected += OnDisconnected;
+
+            if (role == LinkRole.Host)
+            {
+                YargLogger.LogInfo($"Link: hosting as {name}. Friends join with: -link-join {_session.LocalTicket}");
+                ToastManager.ToastInformation($"Hosting an online session: {_session.LocalTicket}");
+            }
+            else
+            {
+                _joinTicket = join.Trim();
+                _nextJoinTime = Now;
+            }
+        }
+
+        private static LoopbackLinkTransport CreateTransport(int port, bool lan)
+        {
+            return lan
+                ? new LoopbackLinkTransport(port, IPAddress.Any, FindLanAddress())
+                : new LoopbackLinkTransport(port);
+        }
+
+        private static string FindLanAddress()
+        {
+            try
+            {
+                foreach (var address in Dns.GetHostAddresses(Dns.GetHostName()))
+                {
+                    if (address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address))
+                    {
+                        return address.ToString();
+                    }
+                }
+            }
+            catch (SocketException)
+            {
+                // Fall back to loopback
+            }
+
+            return null;
+        }
+
+        private void Join()
+        {
+            try
+            {
+                _session.Join(_joinTicket);
+            }
+            catch (FormatException e)
+            {
+                YargLogger.LogFormatError("Link: {0}", e.Message);
+                ToastManager.ToastError("Online link: that isn't a valid invite");
+                _joinTicket = null;
+            }
+        }
+
+        private void Close()
+        {
+            _session?.Dispose();
+            _session = null;
+            _joinTicket = null;
+            _nextOpenTime = 0;
+            _nextJoinTime = double.PositiveInfinity;
+            _lastProblem = null;
+            _remoteRequestHash = null;
+            _remoteSetups.Clear();
+            _shared = null;
+        }
+
+        private void OnMemberJoined(LinkMember member)
+        {
+            _lastProblem = null;
+            ToastManager.ToastInformation($"{member.Name} is in the online session");
+        }
+
+        private void OnMemberLeft(LinkMember member)
+        {
+            // A friend who is on a highway right now stays there, shown as stalled
+            if (_remoteSetups.TryGetValue(member.Id, out var setup) && !setup.Taken)
+            {
+                _remoteSetups.Remove(member.Id);
+            }
+
+            if (_session is { IsConnected: true })
+            {
+                ToastManager.ToastInformation($"{member.Name} left the online session");
+            }
+        }
+
+        private void OnDisconnected(string reason)
+        {
+            // A joiner keeps trying, but only says so when something changes
+            _nextJoinTime = Now + REJOIN_INTERVAL;
+            if (reason != _lastProblem)
+            {
+                _lastProblem = reason;
+                ToastManager.ToastWarning($"Online session: {reason}");
+            }
+        }
+
+        private static string SceneName(SceneIndex scene) => scene switch
+        {
+            SceneIndex.Menu        => LinkSession.SCENE_MENU,
+            SceneIndex.Gameplay    => "gameplay",
+            SceneIndex.Score       => "score",
+            SceneIndex.Calibration => "calibration",
+            _                      => scene.ToString().ToLowerInvariant(),
+        };
+
+        private static SongInfo ToSongInfo(SongEntry song) =>
+            new(song.Hash.ToString(), song.Name.Original, song.Artist.Original);
+
+        #endregion
+
         #region Synced start
 
         public enum StartResult
         {
             /// <summary>A synced start is scheduled; call <see cref="WaitForStartTime"/>.</summary>
             Synced,
-            /// <summary>The link is gone or took too long; start right away.</summary>
+            /// <summary>The session is gone or took too long; start right away.</summary>
             Alone,
             /// <summary>The start was cancelled; return to the menu.</summary>
             Cancelled,
         }
 
         /// <summary>
-        /// Report that gameplay is loaded, then wait until the sidecar schedules the start.
+        /// Report that gameplay is loaded, then wait until the session schedules the start.
         /// Called by <see cref="GameManager"/> once its own players exist.
         /// </summary>
         /// <remarks>
@@ -190,33 +364,24 @@ namespace YARG.Integration.Link
             _startAt = null;
             _cancelReason = null;
             _remoteRequestHash = null;
-            _session = null;
+            _shared = null;
 
             // Forget setups for any other song
             string hash = song.Hash.ToString();
             var stale = new List<string>();
-            foreach (var (peer, setup) in _remoteSetups)
+            foreach (var (member, setup) in _remoteSetups)
             {
-                if (setup.SongHash != hash) stale.Add(peer);
+                if (setup.SongHash != hash) stale.Add(member);
             }
-            foreach (var peer in stale)
+            foreach (var member in stale)
             {
-                _remoteSetups.Remove(peer);
+                _remoteSetups.Remove(member);
             }
 
             // Tell friends about our players first, so they have it by the time the start is scheduled
-            var session = new Session(gameManager, hash);
-            Send(new JObject
-            {
-                ["type"] = "broadcast",
-                ["data"] = session.CreateSetupMessage(),
-            });
-
-            Send(new JObject
-            {
-                ["type"] = "ready",
-                ["song"] = SongJson(song),
-            });
+            var shared = new SharedSong(gameManager, hash);
+            _session.Broadcast(KIND_SETUP, shared.CreateSetupMessage());
+            _session.ReportReady(ToSongInfo(song));
 
             context.SetLoadingText("Waiting for other players...", song.Name.Original);
             YargLogger.LogInfo("Link: waiting for synced start");
@@ -224,8 +389,6 @@ namespace YARG.Integration.Link
             double deadline = Now + MAX_WAIT_SECONDS;
             while (true)
             {
-                await UniTask.Yield();
-
                 if (_cancelReason != null)
                 {
                     ToastManager.ToastWarning($"Online start cancelled: {_cancelReason}");
@@ -235,16 +398,18 @@ namespace YARG.Integration.Link
 
                 if (_startAt.HasValue)
                 {
-                    _session = session;
+                    _shared = shared;
                     return StartResult.Synced;
                 }
 
-                if (!SidecarAlive || Now >= deadline)
+                if (_session is not { IsConnected: true } || Now >= deadline)
                 {
-                    ToastManager.ToastWarning("Lost the online link, starting without sync");
+                    ToastManager.ToastWarning("Lost the online session, starting without sync");
                     _waiting = false;
                     return StartResult.Alone;
                 }
+
+                await UniTask.Yield();
             }
         }
 
@@ -255,7 +420,7 @@ namespace YARG.Integration.Link
         {
             try
             {
-                while (_startAt.HasValue && Now < _startAt.Value && SidecarAlive)
+                while (_startAt.HasValue && Now < _startAt.Value && _session != null)
                 {
                     await UniTask.Yield();
                 }
@@ -293,73 +458,39 @@ namespace YARG.Integration.Link
             return players;
         }
 
+        private void OnStartScheduled(double delaySeconds)
+        {
+            if (_waiting)
+            {
+                _startAt = Now + delaySeconds;
+            }
+        }
+
+        private void OnStartCancelled(string reason)
+        {
+            if (_waiting)
+            {
+                _cancelReason = reason;
+            }
+            else if (_remoteRequestHash != null)
+            {
+                _remoteRequestHash = null;
+                ToastManager.ToastWarning($"Online start cancelled: {reason}");
+            }
+        }
+
         #endregion
 
         #region Incoming
 
-        private void HandleMessage(string text)
+        private void HandleLoadSong(SongInfo song)
         {
-            JObject msg;
-            try
-            {
-                msg = JObject.Parse(text);
-            }
-            catch (JsonException e)
-            {
-                YargLogger.LogFormatWarning("Link: bad message from sidecar: {0}", e.Message);
-                return;
-            }
-
-            switch ((string) msg["type"])
-            {
-                case "ping":
-                    _peers = (int?) msg["peers"] ?? 0;
-                    _lastPingTime = Now;
-                    break;
-
-                case "load_song":
-                    HandleLoadSong(msg["song"] as JObject);
-                    break;
-
-                case "start":
-                    if (_waiting)
-                    {
-                        double delay = ((double?) msg["delayMs"] ?? 0) / 1000.0;
-                        _startAt = Now + delay;
-                    }
-                    break;
-
-                case "peer":
-                    HandlePeerData((string) msg["from"], msg["data"] as JObject);
-                    break;
-
-                case "peer_left":
-                    YargLogger.LogFormatInfo("Link: friend {0} left", (string) msg["from"]);
-                    break;
-
-                case "cancel":
-                    if (_waiting)
-                    {
-                        _cancelReason = (string) msg["reason"] ?? "cancelled";
-                    }
-                    else if (_remoteRequestHash != null)
-                    {
-                        _remoteRequestHash = null;
-                        ToastManager.ToastWarning($"Online start cancelled: {(string) msg["reason"]}");
-                    }
-                    break;
-            }
-        }
-
-        private void HandleLoadSong(JObject song)
-        {
-            string hash = (string) song?["hash"];
-            string name = (string) song?["name"] ?? "?";
-            if (string.IsNullOrEmpty(hash)) return;
+            string hash = song.Hash;
+            string name = song.Name ?? "?";
 
             if (GlobalVariables.Instance.CurrentScene != SceneIndex.Menu || MenuManager.Instance == null)
             {
-                Decline(hash, "busy");
+                _session.ReportDecline(hash, "busy");
                 return;
             }
 
@@ -368,7 +499,7 @@ namespace YARG.Integration.Link
                 entries.Count == 0)
             {
                 ToastManager.ToastWarning($"Your friend picked \"{name}\", which isn't in your library");
-                Decline(hash, "song not in library");
+                _session.ReportDecline(hash, "song not in library");
                 return;
             }
 
@@ -389,7 +520,7 @@ namespace YARG.Integration.Link
         }
 
         /// <summary>
-        /// If the player backs out of a friend's song, tell the sidecar so nobody waits on us.
+        /// If the player backs out of a friend's song, decline it so nobody waits on us.
         /// </summary>
         private void CheckRemoteRequestAbandoned()
         {
@@ -397,34 +528,34 @@ namespace YARG.Integration.Link
 
             if (GlobalVariables.Instance.CurrentScene != SceneIndex.Menu)
             {
-                // Moved on to gameplay; the ready message takes it from here
+                // Moved on to gameplay; reporting ready takes it from here
                 _remoteRequestHash = null;
                 return;
             }
 
             if (MenuManager.Instance != null && MenuManager.Instance.CurrentMenu != MenuManager.Menu.DifficultySelect)
             {
-                Decline(_remoteRequestHash, "backed out");
+                _session.ReportDecline(_remoteRequestHash, "backed out");
                 _remoteRequestHash = null;
             }
         }
 
-        private void HandlePeerData(string peer, JObject data)
+        private void HandleGameData(LinkMember member, string kind, JObject data)
         {
-            if (string.IsNullOrEmpty(peer) || data == null) return;
+            if (data == null) return;
 
             try
             {
-                switch ((string) data["kind"])
+                switch (kind)
                 {
-                    case "setup":
-                        var setup = RemoteSetup.Parse(peer, data);
-                        _remoteSetups[peer] = setup;
-                        YargLogger.LogInfo($"Link: got {setup.Feeds.Count} player(s) from a friend for {setup.SongHash}");
+                    case KIND_SETUP:
+                        var setup = RemoteSetup.Parse(member.Id, data);
+                        _remoteSetups[member.Id] = setup;
+                        YargLogger.LogInfo($"Link: got {setup.Feeds.Count} player(s) from {member.Name} for {setup.SongHash}");
                         break;
 
-                    case "inputs":
-                        if (_remoteSetups.TryGetValue(peer, out var existing))
+                    case KIND_INPUTS:
+                        if (_remoteSetups.TryGetValue(member.Id, out var existing))
                         {
                             existing.Receive(data, Now);
                         }
@@ -433,132 +564,30 @@ namespace YARG.Integration.Link
             }
             catch (Exception e)
             {
-                YargLogger.LogException(e, "Link: bad data from a friend");
+                YargLogger.LogException(e, $"Link: bad {kind} data from {member.Name}");
             }
         }
 
         /// <summary>
         /// Drop per-song state once we've left gameplay.
         /// </summary>
-        private void CheckSessionEnded()
+        private void CheckSongEnded()
         {
             if (GlobalVariables.Instance.CurrentScene == SceneIndex.Gameplay) return;
+            if (_shared == null) return;
 
-            _gameManager = null;
+            _shared = null;
 
-            if (_session != null)
+            // Setups that were used are done with; ones still waiting for us to join are kept
+            var used = new List<string>();
+            foreach (var (member, setup) in _remoteSetups)
             {
-                _session = null;
-
-                // Setups that were used are done with; ones still waiting for us to join are kept
-                var used = new List<string>();
-                foreach (var (peer, setup) in _remoteSetups)
-                {
-                    if (setup.Taken) used.Add(peer);
-                }
-                foreach (var peer in used)
-                {
-                    _remoteSetups.Remove(peer);
-                }
+                if (setup.Taken) used.Add(member);
             }
-        }
-
-        private void Decline(string hash, string reason)
-        {
-            Send(new JObject
+            foreach (var member in used)
             {
-                ["type"] = "decline",
-                ["hash"] = hash,
-                ["reason"] = reason,
-            });
-        }
-
-        #endregion
-
-        #region Status
-
-        private void SendStatus()
-        {
-            var scene = GlobalVariables.Instance.CurrentScene;
-            var status = new JObject
-            {
-                ["type"] = "status",
-                ["scene"] = scene switch
-                {
-                    SceneIndex.Menu        => "menu",
-                    SceneIndex.Gameplay    => "gameplay",
-                    SceneIndex.Score       => "score",
-                    SceneIndex.Calibration => "calibration",
-                    _                      => scene.ToString().ToLowerInvariant(),
-                },
-                ["waiting"] = _waiting,
-            };
-
-            if (scene == SceneIndex.Gameplay)
-            {
-                if (_gameManager == null)
-                {
-                    _gameManager = FindAnyObjectByType<GameManager>();
-                }
-
-                if (_gameManager != null)
-                {
-                    AddGameplayStatus(status, _gameManager);
-                }
+                _remoteSetups.Remove(member);
             }
-            else if (scene == SceneIndex.Score && GlobalVariables.State.CurrentSong != null)
-            {
-                status["song"] = SongJson(GlobalVariables.State.CurrentSong);
-            }
-
-            Send(status);
-        }
-
-        private static void AddGameplayStatus(JObject status, GameManager gm)
-        {
-            if (gm.Song != null)
-            {
-                status["song"] = SongJson(gm.Song);
-            }
-
-            status["paused"] = gm.Paused;
-
-            if (!gm.IsSongStarted || gm.Players == null)
-            {
-                return;
-            }
-
-            status["songTime"] = gm.SongTime;
-
-            var players = new JArray();
-            foreach (var player in gm.Players)
-            {
-                if (player == null || player.Player == null || player.IsRemote) continue;
-
-                var profile = player.Player.Profile;
-                players.Add(new JObject
-                {
-                    ["name"]       = profile.Name,
-                    ["instrument"] = profile.CurrentInstrument.ToString(),
-                    ["difficulty"] = profile.CurrentDifficulty.ToString(),
-                    ["score"]      = player.Score,
-                    ["combo"]      = player.Combo,
-                    ["stars"]      = player.Stars,
-                    ["notesHit"]   = player.NotesHit,
-                    ["totalNotes"] = player.BaseStats.TotalNotes,
-                });
-            }
-            status["players"] = players;
-        }
-
-        private static JObject SongJson(SongEntry song)
-        {
-            return new JObject
-            {
-                ["hash"]   = song.Hash.ToString(),
-                ["name"]   = song.Name.Original,
-                ["artist"] = song.Artist.Original,
-            };
         }
 
         #endregion
@@ -567,22 +596,22 @@ namespace YARG.Integration.Link
 
         private void SendInputs()
         {
-            var gm = _session.GameManager;
+            var gm = _shared.GameManager;
             if (gm == null || !gm.IsSongStarted || _waiting)
             {
                 return;
             }
 
-            double sinceLast = Now - _session.LastSendTime;
+            double sinceLast = Now - _shared.LastSendTime;
             if (sinceLast < INPUTS_INTERVAL_MIN)
             {
                 return;
             }
 
             bool anyNew = false;
-            foreach (var player in _session.Players)
+            foreach (var player in _shared.Players)
             {
-                if (player != null && player.ReplayInputs.Count > _session.SentCounts[player])
+                if (player != null && player.ReplayInputs.Count > _shared.SentCounts[player])
                 {
                     anyNew = true;
                     break;
@@ -594,18 +623,16 @@ namespace YARG.Integration.Link
                 return;
             }
 
-            _session.LastSendTime = Now;
-            Send(new JObject
-            {
-                ["type"] = "broadcast",
-                ["data"] = _session.CreateInputsMessage(gm),
-            });
+            _shared.LastSendTime = Now;
+
+            // Reliable: each message only carries the inputs since the last one
+            _session.Broadcast(KIND_INPUTS, _shared.CreateInputsMessage(gm));
         }
 
         /// <summary>
         /// Our side of a synced song: which players we share and how many of their inputs we've sent.
         /// </summary>
-        private class Session
+        private class SharedSong
         {
             public readonly GameManager      GameManager;
             public readonly string           SongHash;
@@ -615,7 +642,7 @@ namespace YARG.Integration.Link
 
             private int _seq;
 
-            public Session(GameManager gameManager, string songHash)
+            public SharedSong(GameManager gameManager, string songHash)
             {
                 GameManager = gameManager;
                 SongHash = songHash;
@@ -680,7 +707,6 @@ namespace YARG.Integration.Link
 
                 return new JObject
                 {
-                    ["kind"]    = "setup",
                     ["song"]    = SongHash,
                     ["players"] = players,
                     ["replay"]  = Convert.ToBase64String(data.Serialize().ToArray()),
@@ -726,7 +752,6 @@ namespace YARG.Integration.Link
 
                 return new JObject
                 {
-                    ["kind"]    = "inputs",
                     ["song"]    = SongHash,
                     ["seq"]     = _seq++,
                     // Every input up to this time has been recorded (before each player's calibration)
@@ -758,7 +783,7 @@ namespace YARG.Integration.Link
             /// <summary>Added to a song already.</summary>
             public bool Taken;
 
-            public static RemoteSetup Parse(string peer, JObject msg)
+            public static RemoteSetup Parse(string member, JObject msg)
             {
                 var setup = new RemoteSetup { SongHash = (string) msg["song"] };
 
@@ -777,7 +802,7 @@ namespace YARG.Integration.Link
                     bool mirrored = frame >= 0 && frame < setup.Data.Frames.Length;
 
                     setup.FrameIndices.Add(mirrored ? frame : -1);
-                    setup.Feeds.Add(new RemoteInputFeed(peer, i,
+                    setup.Feeds.Add(new RemoteInputFeed(member, i,
                         (string) p["name"] ?? "Friend",
                         (string) p["instrument"] ?? "",
                         (string) p["difficulty"] ?? "",
@@ -831,14 +856,14 @@ namespace YARG.Integration.Link
 
         private void OnGUI()
         {
-            if (_session == null || _client == null) return;
+            if (_shared == null || _session == null) return;
             if (GlobalVariables.Instance == null || GlobalVariables.Instance.CurrentScene != SceneIndex.Gameplay) return;
 
-            var gm = _session.GameManager;
+            var gm = _shared.GameManager;
             if (gm == null || !gm.IsSongStarted) return;
 
             var rows = new List<(string Name, string Detail, int Score, bool Local, bool Stalled)>();
-            foreach (var player in _session.Players)
+            foreach (var player in _shared.Players)
             {
                 if (player == null) continue;
                 rows.Add((player.Player.Profile.Name,
@@ -897,95 +922,7 @@ namespace YARG.Integration.Link
             return $"{stars:0.0}★  x{combo}  {notesHit}/{totalNotes} ({percent})";
         }
 
-        private static string Escape(string text) => text.Replace("<", "<\u200B");
-
-        #endregion
-
-        #region Socket
-
-        private void Open()
-        {
-            try
-            {
-                _client = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
-                // Only accept datagrams from the sidecar
-                _client.Connect(IPAddress.Loopback, SIDECAR_PORT);
-            }
-            catch (SocketException e)
-            {
-                YargLogger.LogFormatError("Link: failed to open socket: {0}", e.Message);
-                _client?.Dispose();
-                _client = null;
-                return;
-            }
-
-            var client = _client;
-            _receiveThread = new Thread(() => ReceiveLoop(client))
-            {
-                IsBackground = true,
-                Name = "YARG Link Receiver",
-            };
-            _receiveThread.Start();
-            YargLogger.LogInfo("Link: enabled");
-        }
-
-        private void Close()
-        {
-            _client?.Dispose();
-            _client = null;
-            _receiveThread = null;
-            _peers = 0;
-            _lastPingTime = double.NegativeInfinity;
-            _remoteRequestHash = null;
-            _remoteSetups.Clear();
-            _session = null;
-        }
-
-        private void ReceiveLoop(UdpClient client)
-        {
-            var remote = new IPEndPoint(IPAddress.Any, 0);
-            while (true)
-            {
-                try
-                {
-                    var bytes = client.Receive(ref remote);
-                    _incoming.Enqueue(Encoding.UTF8.GetString(bytes));
-                }
-                catch (ObjectDisposedException)
-                {
-                    return;
-                }
-                catch (SocketException e)
-                {
-                    if (e.SocketErrorCode == SocketError.Interrupted || e.SocketErrorCode == SocketError.NotSocket)
-                    {
-                        return;
-                    }
-
-                    // "Connection refused/reset" just means the sidecar isn't running
-                    Thread.Sleep(100);
-                }
-            }
-        }
-
-        private void Send(JObject msg)
-        {
-            if (_client == null) return;
-
-            try
-            {
-                var bytes = Encoding.UTF8.GetBytes(msg.ToString(Formatting.None));
-                _client.Send(bytes, bytes.Length);
-            }
-            catch (SocketException)
-            {
-                // Sidecar not running; expected
-            }
-            catch (ObjectDisposedException)
-            {
-                // Closed concurrently
-            }
-        }
+        private static string Escape(string text) => text.Replace("<", "<​");
 
         #endregion
     }

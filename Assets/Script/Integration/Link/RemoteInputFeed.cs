@@ -39,7 +39,8 @@ namespace YARG.Integration.Link
         /// <summary>The feed counts as stalled after this long without data.</summary>
         public const double STALL_SECONDS = 3.0;
 
-        public string Peer  { get; }
+        /// <summary>The member ID of the friend whose player this is.</summary>
+        public string Member { get; }
         public int    Index { get; }
         public string Name  { get; }
 
@@ -77,9 +78,9 @@ namespace YARG.Integration.Link
         private double _peakLateness;
         private double _lastPlaybackTime = double.NegativeInfinity;
 
-        public RemoteInputFeed(string peer, int index, string name, string instrument, string difficulty, bool mirrored)
+        public RemoteInputFeed(string member, int index, string name, string instrument, string difficulty, bool mirrored)
         {
-            Peer = peer;
+            Member = member;
             Index = index;
             Name = name;
             Instrument = instrument;
@@ -101,7 +102,7 @@ namespace YARG.Integration.Link
             int skip = Math.Max(0, _nextInputIndex - from);
             if (from > _nextInputIndex && !_gapLogged)
             {
-                // A lost datagram between the game and the sidecar. The mirror will drift from here on.
+                // Inputs travel reliably, so this means a bug or a resent setup. The mirror will drift from here on.
                 YargLogger.LogWarning($"Link: lost {from - _nextInputIndex} input(s) from {Name}, their track may be inaccurate");
                 _gapLogged = true;
             }
