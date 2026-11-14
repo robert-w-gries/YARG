@@ -2532,7 +2532,7 @@
             },
             "LinkEnable": {
                 "Name": "Enable online link",
-                "Description": "Connects to the yarg-link sidecar to share scores with friends and start songs together. While a friend is connected, songs wait on the loading screen until everyone is ready."
+                "Description": "Plays songs together with friends over the network, showing their highways and scores. While a friend is connected, songs wait on the loading screen until everyone is ready. For now, hosting and joining are set up with launch options (-link-join, -link-port)."
             },
             "RB3EEnabled": {
                 "Name": "Enable RB3E Stage Kit data stream",
