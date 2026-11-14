@@ -154,3 +154,7 @@ qodana.yaml
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Online link unit tests (dotnet)
+/Tests/**/bin/
+/Tests/**/obj/

@@ -1,0 +1,223 @@
+using System;
+using System.Collections.Generic;
+using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Serialization;
+
+namespace YARG.Integration.Link.Session
+{
+    /// <summary>
+    /// The session protocol: what games say to each other over an <see cref="Transport.ILinkTransport"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Each transport message is one UTF-8 JSON object with a <c>"t"</c> type tag, for example
+    /// <c>{"t":"start","delayMs":2000}</c>. The first message on every connection is a <see cref="HelloMessage"/>;
+    /// peers whose <see cref="LinkProtocol.VERSION"/> or game version differ are refused with a
+    /// <see cref="ByeMessage"/>.
+    /// </para>
+    /// <para>
+    /// Within one protocol version, messages may gain optional fields, and unknown message types are
+    /// ignored, so additions don't need a version bump. Removing or changing a field does.
+    /// </para>
+    /// <para>
+    /// The topology is a star: joiners connect to the host only. The host runs the synced-start coordinator
+    /// and relays each member's <see cref="GameDataMessage"/> to the other members.
+    /// </para>
+    /// </remarks>
+    public static class LinkProtocol
+    {
+        /// <summary>Bump on any incompatible change to the messages below.</summary>
+        public const int VERSION = 1;
+
+        private static readonly JsonSerializer Serializer = JsonSerializer.Create(new JsonSerializerSettings
+        {
+            ContractResolver = new CamelCasePropertyNamesContractResolver(),
+            NullValueHandling = NullValueHandling.Ignore,
+        });
+
+        private static readonly Dictionary<string, Type> TypesByTag = new();
+        private static readonly Dictionary<Type, string> TagsByType = new();
+
+        static LinkProtocol()
+        {
+            Register<HelloMessage>("hello");
+            Register<ByeMessage>("bye");
+            Register<RosterMessage>("roster");
+            Register<SceneMessage>("scene");
+            Register<ReadyMessage>("ready");
+            Register<DeclineMessage>("decline");
+            Register<LoadSongMessage>("load_song");
+            Register<StartMessage>("start");
+            Register<CancelMessage>("cancel");
+            Register<GameDataMessage>("game");
+        }
+
+        private static void Register<T>(string tag) where T : LinkMessage
+        {
+            TypesByTag[tag] = typeof(T);
+            TagsByType[typeof(T)] = tag;
+        }
+
+        public static string TagOf(LinkMessage message) => TagsByType[message.GetType()];
+
+        public static byte[] Encode(LinkMessage message)
+        {
+            var obj = JObject.FromObject(message, Serializer);
+            obj.AddFirst(new JProperty("t", TagOf(message)));
+            return Encoding.UTF8.GetBytes(obj.ToString(Formatting.None));
+        }
+
+        /// <summary>
+        /// Parse a message.
+        /// </summary>
+        /// <returns>The message, or <c>null</c> for a type this version doesn't know.</returns>
+        /// <exception cref="FormatException">The bytes aren't a well-formed message.</exception>
+        public static LinkMessage Decode(byte[] bytes)
+        {
+            try
+            {
+                var obj = JObject.Parse(Encoding.UTF8.GetString(bytes));
+                string tag = (string) obj["t"];
+                if (tag == null)
+                {
+                    throw new FormatException("Message has no type");
+                }
+
+                if (!TypesByTag.TryGetValue(tag, out var type))
+                {
+                    return null;
+                }
+
+                obj.Remove("t");
+                return (LinkMessage) obj.ToObject(type, Serializer);
+            }
+            catch (JsonException e)
+            {
+                throw new FormatException($"Bad message: {e.Message}", e);
+            }
+            catch (ArgumentException e)
+            {
+                throw new FormatException($"Bad message: {e.Message}", e);
+            }
+        }
+    }
+
+    /// <summary>A song, as identified across machines.</summary>
+    public sealed class SongInfo : IEquatable<SongInfo>
+    {
+        /// <summary><c>SongEntry.Hash</c> as a hex string.</summary>
+        public string Hash;
+        public string Name;
+        public string Artist;
+
+        public SongInfo()
+        {
+        }
+
+        public SongInfo(string hash, string name, string artist)
+        {
+            Hash = hash;
+            Name = name;
+            Artist = artist;
+        }
+
+        public bool Equals(SongInfo other) =>
+            other != null && Hash == other.Hash && Name == other.Name && Artist == other.Artist;
+
+        public override bool Equals(object obj) => obj is SongInfo other && Equals(other);
+        public override int GetHashCode() => Hash?.GetHashCode() ?? 0;
+        public override string ToString() => $"\"{Name}\" by {Artist} ({Hash})";
+    }
+
+    public abstract class LinkMessage
+    {
+    }
+
+    /// <summary>Both ways, first on every connection.</summary>
+    public sealed class HelloMessage : LinkMessage
+    {
+        public int    Protocol;
+        /// <summary>The game build; peers must match exactly, since remote highways replay inputs.</summary>
+        public string Game;
+        /// <summary>Stable for the lifetime of a session; identifies the member to everyone.</summary>
+        public string Member;
+        public string Name;
+        /// <summary>Whether the sender is hosting. A joiner only talks to a host.</summary>
+        public bool   Host;
+    }
+
+    /// <summary>Both ways: the sender refuses the connection and is about to close it.</summary>
+    public sealed class ByeMessage : LinkMessage
+    {
+        public string Reason;
+    }
+
+    public sealed class MemberInfo
+    {
+        public string Id;
+        public string Name;
+        /// <summary>See <see cref="SceneMessage.Scene"/>.</summary>
+        public string Scene;
+        public bool   Host;
+    }
+
+    /// <summary>Host → joiners, whenever someone joins, leaves or changes scene. Includes the receiver.</summary>
+    public sealed class RosterMessage : LinkMessage
+    {
+        public List<MemberInfo> Members = new();
+    }
+
+    /// <summary>Joiner → host, whenever the joiner's scene changes.</summary>
+    public sealed class SceneMessage : LinkMessage
+    {
+        /// <summary><c>"menu"</c>, <c>"gameplay"</c>, <c>"score"</c>, or anything else the game reports.</summary>
+        public string Scene;
+    }
+
+    /// <summary>Joiner → host: gameplay for this song is loaded and holding for the start.</summary>
+    public sealed class ReadyMessage : LinkMessage
+    {
+        public SongInfo Song;
+    }
+
+    /// <summary>Joiner → host: the joiner can't or won't play the song being started.</summary>
+    public sealed class DeclineMessage : LinkMessage
+    {
+        public string Hash;
+        public string Reason;
+    }
+
+    /// <summary>Host → joiner: someone picked this song; load it and report ready or decline.</summary>
+    public sealed class LoadSongMessage : LinkMessage
+    {
+        public SongInfo Song;
+    }
+
+    /// <summary>
+    /// Host → joiner: start playback this long after the host sent it. The joiner subtracts its one-way
+    /// latency to the host.
+    /// </summary>
+    public sealed class StartMessage : LinkMessage
+    {
+        public long DelayMs;
+    }
+
+    /// <summary>Host → joiner: the pending start was abandoned.</summary>
+    public sealed class CancelMessage : LinkMessage
+    {
+        public string Reason;
+    }
+
+    /// <summary>
+    /// Gameplay data for every other member (player setups, input streams). The session doesn't look inside.
+    /// </summary>
+    public sealed class GameDataMessage : LinkMessage
+    {
+        /// <summary>The member it came from. Filled in by the host; a joiner's own value is ignored.</summary>
+        public string  From;
+        public string  Kind;
+        public JObject Data;
+    }
+}

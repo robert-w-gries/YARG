@@ -35,6 +35,26 @@ namespace YARG
 
         private const string PERSISTENT_DATA_PATH_ARG = "-persistent-data-path";
 
+        /// <summary>
+        /// Online link (development): join the session hosted at this ticket instead of hosting one.
+        /// </summary>
+        private const string LINK_JOIN_ARG = "-link-join";
+
+        /// <summary>
+        /// Online link (development): the port to accept connections on.
+        /// </summary>
+        private const string LINK_PORT_ARG = "-link-port";
+
+        /// <summary>
+        /// Online link (development): the name other players see.
+        /// </summary>
+        private const string LINK_NAME_ARG = "-link-name";
+
+        /// <summary>
+        /// Online link (development): accept connections from the local network, not just this machine.
+        /// </summary>
+        private const string LINK_LAN_ARG = "-link-lan";
+
         public static bool Offline { get; private set; }
 
         public static bool VerboseReplays { get; private set; }
@@ -42,6 +62,11 @@ namespace YARG
         public static string Language           { get; private set; }
         public static string DownloadLocation   { get; private set; }
         public static string PersistentDataPath { get; private set; }
+
+        public static string LinkJoin { get; private set; }
+        public static int?   LinkPort { get; private set; }
+        public static string LinkName { get; private set; }
+        public static bool   LinkLan  { get; private set; }
 
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSplashScreen)]
@@ -83,6 +108,33 @@ namespace YARG
                             PersistentDataPath = args[i];
                         }
 
+                        break;
+                    case LINK_JOIN_ARG:
+                        i++;
+                        if (i < args.Length)
+                        {
+                            LinkJoin = args[i];
+                        }
+
+                        break;
+                    case LINK_PORT_ARG:
+                        i++;
+                        if (i < args.Length && int.TryParse(args[i], out int port))
+                        {
+                            LinkPort = port;
+                        }
+
+                        break;
+                    case LINK_NAME_ARG:
+                        i++;
+                        if (i < args.Length)
+                        {
+                            LinkName = args[i];
+                        }
+
+                        break;
+                    case LINK_LAN_ARG:
+                        LinkLan = true;
                         break;
                 }
             }
