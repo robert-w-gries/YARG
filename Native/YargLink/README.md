@@ -47,17 +47,33 @@ dotnet test ../../Tests/YARG.Link.Tests   # C# transport and session tests, on t
 
 The toolchain is pinned in `rust-toolchain.toml`.
 
-### Linux plugin
+### Unity plugins
+
+The plugins in `Assets/Plugins/YargLink/` are built with the same tool as YargAudio's:
 
 ```bash
-./build-linux.sh
+dotnet run --project scripts/NativeBuild -- build --library link                # this platform
+dotnet run --project scripts/NativeBuild -- package --library link --ref <branch> # all three, on GitHub Actions
 ```
 
-This builds in an `ubuntu:20.04` container (Docker), so the library only needs glibc 2.31. It
-checks the glibc floor and copies the result to `Assets/Plugins/YargLink/Linux/x86_64/`. A plain
-`cargo build --release` works too, but links against the host's glibc.
+`build` runs the Rust tests, builds the release library, checks it, runs the C harness and the C#
+tests on it, and copies it into the Unity project. `package` runs `.github/workflows/native-link.yml`
+on a pushed branch and downloads all three plugins. Commit the binaries afterwards.
 
-Windows and macOS builds come with CI (`native-link.yml`).
+| Platform | Target | Notes |
+|---|---|---|
+| Windows x64 | `x86_64-pc-windows-msvc` | Static CRT, so players don't need the VC++ redistributable. |
+| Linux x64 | `x86_64-unknown-linux-gnu` | Built in `ubuntu:20.04` (glibc 2.31, like YargAudio). Outside that image, NativeBuild runs the build in a docker container of it, so Linux needs Docker. |
+| macOS universal | `aarch64-apple-darwin` + `x86_64-apple-darwin` | Joined with `lipo`, minimum macOS 11.0. Stripped by the linker, so the linker's ad-hoc signature stays valid; never re-signed with `codesign`. |
+
+The build is reproducible: CI rebuilds the library and fails if the committed Linux or macOS plugin
+differs by a byte (`--verify-committed-plugin`). This relies on the pinned toolchain, `--locked`,
+and `--remap-path-prefix` for the source and cargo directories, which rustc would otherwise embed in
+panic messages. Windows is only tested, not compared, as with YargAudio, because the MSVC linker on
+CI runners changes with the runner image.
+
+A plain `cargo build --release` is fine for local testing, but it links against the host's glibc
+and doesn't match the committed plugin.
 
 ## Using it from Unity
 

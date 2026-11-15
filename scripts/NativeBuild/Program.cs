@@ -19,7 +19,7 @@ internal static class Program
 
             return command switch
             {
-                "build" => await BuildCommand.RunAsync(
+                "build" => await RunBuildAsync(
                     repository, ParseBuildOptions(args[1..])),
                 "package" => await PackageCommand.RunAsync(
                     repository, ParsePackageOptions(args[1..])),
@@ -38,8 +38,15 @@ internal static class Program
         }
     }
 
+    private static Task<int> RunBuildAsync(
+        RepositoryLayout repository, BuildOptions options) =>
+        options.Library == NativeLibrary.Link
+            ? LinkBuildCommand.RunAsync(repository, options)
+            : BuildCommand.RunAsync(repository, options);
+
     private static BuildOptions ParseBuildOptions(string[] args)
     {
+        NativeLibrary library = NativeLibrary.Audio;
         string configuration = "Release";
         string? outputDirectory = null;
         bool noCopy = false;
@@ -49,6 +56,9 @@ internal static class Program
         {
             switch (args[i])
             {
+                case "--library":
+                    library = ParseLibrary(ReadValue(args, ref i, "--library"));
+                    break;
                 case "--configuration":
                     configuration = ReadValue(args, ref i, "--configuration");
                     if (configuration is not ("Debug" or "Release" or "RelWithDebInfo"))
@@ -87,12 +97,18 @@ internal static class Program
                 "--verify-committed-plugin cannot be combined with --no-copy.");
         }
 
+        if (library == NativeLibrary.Link && configuration != "Release")
+        {
+            throw new ToolException("The link library only builds the Release configuration.");
+        }
+
         return new BuildOptions(
-            configuration, outputDirectory, noCopy, verifyCommittedPlugin);
+            library, configuration, outputDirectory, noCopy, verifyCommittedPlugin);
     }
 
     private static PackageOptions ParsePackageOptions(string[] args)
     {
+        NativeLibrary library = NativeLibrary.Audio;
         string? remoteRef = null;
         string? repository = null;
         int timeoutMinutes = 45;
@@ -102,6 +118,9 @@ internal static class Program
         {
             switch (args[i])
             {
+                case "--library":
+                    library = ParseLibrary(ReadValue(args, ref i, "--library"));
+                    break;
                 case "--ref":
                     remoteRef = ReadValue(args, ref i, "--ref");
                     break;
@@ -144,8 +163,16 @@ internal static class Program
         }
 
         return new PackageOptions(
-            remoteRef, repository, timeoutMinutes, pollSeconds);
+            library, remoteRef, repository, timeoutMinutes, pollSeconds);
     }
+
+    private static NativeLibrary ParseLibrary(string value) =>
+        value.ToLowerInvariant() switch
+        {
+            "audio" => NativeLibrary.Audio,
+            "link" => NativeLibrary.Link,
+            _ => throw new ToolException("--library must be audio or link."),
+        };
 
     private static string ReadValue(string[] args, ref int index, string option)
     {
@@ -172,6 +199,9 @@ internal static class Program
               build       Build/test native plugin for current host and update Unity.
               package     Run GitHub all-platform build and update local Unity plugins.
 
+            Both commands take --library <audio|link>. Default: audio (Native/YargAudio,
+            CMake); link is Native/YargLink (Rust, cargo).
+
             No command performs local Git operations.
             """);
         PrintBuildUsage();
@@ -183,6 +213,7 @@ internal static class Program
         Console.WriteLine(
             """
             build options:
+              --library <audio|link>                           Default: audio.
               --configuration <Debug|Release|RelWithDebInfo>  Default: Release.
               --output <directory>                             Write artifact files there.
               --no-copy                                         Do not copy plugin files.
@@ -195,6 +226,7 @@ internal static class Program
         Console.WriteLine(
             """
             package options:
+              --library <audio|link>           Default: audio.
               --ref <remote-branch-or-commit>  Required source ref for GitHub Actions.
               --repo <owner/repo>               Optional GitHub repository override.
               --timeout-minutes <n>             Default: 45.
@@ -211,12 +243,14 @@ internal sealed class ToolException : Exception
 }
 
 internal sealed record BuildOptions(
+    NativeLibrary Library,
     string Configuration,
     string? OutputDirectory,
     bool NoCopy,
     bool VerifyCommittedPlugin);
 
 internal sealed record PackageOptions(
+    NativeLibrary Library,
     string RemoteRef,
     string? Repository,
     int TimeoutMinutes,
@@ -233,6 +267,9 @@ internal sealed class RepositoryLayout
 
     public string NativeDirectory =>
         Path.Combine(Root, "Native", "YargAudio");
+
+    public string LinkDirectory =>
+        Path.Combine(Root, "Native", "YargLink");
 
     public static RepositoryLayout Find()
     {
@@ -268,10 +305,11 @@ internal static class ProcessRunner
     public static async Task RunAsync(
         string fileName,
         IEnumerable<string> arguments,
-        string workingDirectory)
+        string workingDirectory,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         CommandResult result = await ExecuteAsync(
-            fileName, arguments, workingDirectory, captureOutput: false);
+            fileName, arguments, workingDirectory, captureOutput: false, environment);
         if (result.ExitCode != 0)
         {
             throw new ToolException(
@@ -292,7 +330,8 @@ internal static class ProcessRunner
         string fileName,
         IEnumerable<string> arguments,
         string workingDirectory,
-        bool captureOutput)
+        bool captureOutput,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         string[] argumentArray = arguments.ToArray();
         var startInfo = new ProcessStartInfo
@@ -308,6 +347,11 @@ internal static class ProcessRunner
         foreach (string argument in argumentArray)
         {
             startInfo.ArgumentList.Add(argument);
+        }
+
+        foreach ((string name, string value) in environment ?? new Dictionary<string, string>())
+        {
+            startInfo.Environment[name] = value;
         }
 
         Console.WriteLine($"> {FormatCommand(fileName, argumentArray)}");

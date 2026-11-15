@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unit tests for the online link's transport and session layers, which are plain .NET so they can be
+    tested without Unity. Builds the sources straight from Assets/. Run with:
+      dotnet test Tests/YARG.Link.Tests
+    Tests on the native transport need Native/YargLink built (`cargo build` there) and are skipped
+    otherwise.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Match what Unity compiles Assembly-CSharp with -->
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Assets/Script/Integration/Link/Transport/**/*.cs" LinkBase="Link/Transport" />
+    <Compile Include="../../Assets/Script/Integration/Link/Session/**/*.cs" LinkBase="Link/Session" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="NUnit" Version="4.5.1" />
+    <PackageReference Include="NUnit3TestAdapter" Version="6.2.0" />
+  </ItemGroup>
+
+</Project>
