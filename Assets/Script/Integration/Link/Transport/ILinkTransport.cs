@@ -151,6 +151,10 @@ namespace YARG.Integration.Link.Transport
         /// <exception cref="FormatException">The ticket isn't one this transport understands.</exception>
         PeerId Connect(string ticket);
 
+        /// <summary>
+        /// Close a connection. Reliable messages already sent to the peer are still delivered (best effort),
+        /// so a goodbye followed by a disconnect arrives. The same goes for <see cref="IDisposable.Dispose"/>.
+        /// </summary>
         void Disconnect(PeerId peer);
 
         /// <summary>
