@@ -41,6 +41,11 @@ namespace YARG
         private const string LINK_JOIN_ARG = "-link-join";
 
         /// <summary>
+        /// Online link (development): host a session at startup, without opening the lobby.
+        /// </summary>
+        private const string LINK_HOST_ARG = "-link-host";
+
+        /// <summary>
         /// Online link (development): <c>native</c> (iroh, the default) or <c>loopback</c> (plain TCP/UDP on
         /// this machine or the LAN, for development).
         /// </summary>
@@ -71,6 +76,7 @@ namespace YARG
         public static string PersistentDataPath { get; private set; }
 
         public static string LinkJoin      { get; private set; }
+        public static bool   LinkHost      { get; private set; }
         public static string LinkTransport { get; private set; }
         public static int?   LinkPort      { get; private set; }
         public static string LinkName { get; private set; }
@@ -124,6 +130,9 @@ namespace YARG
                             LinkJoin = args[i];
                         }
 
+                        break;
+                    case LINK_HOST_ARG:
+                        LinkHost = true;
                         break;
                     case LINK_TRANSPORT_ARG:
                         i++;

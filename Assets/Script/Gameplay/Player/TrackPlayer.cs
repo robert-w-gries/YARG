@@ -314,6 +314,18 @@ namespace YARG.Gameplay.Player
             _startHold.OnHoldComplete += OnStartHeld;
         }
 
+        /// <summary>
+        /// Online link: the host's band meter failed this player. Like failing from its own meter, except that
+        /// the host's no fail setting is the one that counts.
+        /// </summary>
+        public void FailFromLink()
+        {
+            if (PlayerHasFailed) return;
+
+            PlayerHasFailed = true;
+            CameraPositioner.Lower(false);
+        }
+
         protected override void ResetVisuals()
         {
             // "Muting a stem" isn't technically a visual,

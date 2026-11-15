@@ -82,6 +82,9 @@ namespace YARG.Gameplay.HUD
         private const float SPRITE_OVERLAP_OFFSET     = 28f;
         private const float SPRITE_INITIAL_OFFSET     = 42f;
 
+        /// <summary>The band's meter, which in an online session can be the host's.</summary>
+        private float BandHappiness => _gameManager.BandHappiness;
+
         // GameManager will have to initialize us
         public void Initialize(EngineManager engineManager, GameManager gameManager)
         {
@@ -188,7 +191,7 @@ namespace YARG.Gameplay.HUD
                 return;
             }
 
-            if (_previousBandHappiness != _engineManager.Happiness)
+            if (_previousBandHappiness != BandHappiness)
             {
                 UpdateMeterFill();
             }
@@ -264,7 +267,7 @@ namespace YARG.Gameplay.HUD
 
         private void UpdateMeterFill()
         {
-            var happiness = _engineManager.Happiness;
+            var happiness = BandHappiness;
 
             var currentColor = GetMeterColor(happiness);
             if (currentColor != _previousMeterColor)
@@ -275,7 +278,7 @@ namespace YARG.Gameplay.HUD
 
             _bandFillTweener.ChangeValues(_fillImage.fillAmount, happiness).Play();
 
-            _previousBandHappiness = _engineManager.Happiness;
+            _previousBandHappiness = BandHappiness;
         }
 
         private void UpdateMeterGlow(bool anyPlayerInSp)
@@ -283,21 +286,21 @@ namespace YARG.Gameplay.HUD
             // Happiness 0 = Glow Fill 0.05
             // Happiness 1 = Glow Fill 0.95
             // Everything else needs to be scaled between those two.
-            float glowHeight = _engineManager.Happiness switch
+            float glowHeight = BandHappiness switch
             {
                 < 0 => 0f,
                 > 1 => 1f,
-                _   => Mathf.Lerp(0.05f, 0.95f, _engineManager.Happiness)
+                _   => Mathf.Lerp(0.05f, 0.95f, BandHappiness)
             };
 
             if (anyPlayerInSp && !_sp)
             {
-                _meterGlowFillTweener.ChangeValues(_meterSpGlow.fillAmount, glowHeight, (0.8f * _engineManager.Happiness));
+                _meterGlowFillTweener.ChangeValues(_meterSpGlow.fillAmount, glowHeight, (0.8f * BandHappiness));
                 _meterGlowFillTweener.Restart();
             }
             else if (!anyPlayerInSp && _sp)
             {
-                _meterGlowFillTweener.ChangeValues(_meterSpGlow.fillAmount, 0f, (0.8f * _engineManager.Happiness));
+                _meterGlowFillTweener.ChangeValues(_meterSpGlow.fillAmount, 0f, (0.8f * BandHappiness));
                 _meterGlowFillTweener.Restart();
             }
             else if (anyPlayerInSp && !_meterGlowFillTweener.IsPlaying())
