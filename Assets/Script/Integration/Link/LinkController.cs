@@ -18,6 +18,7 @@ using YARG.Core.Song;
 using YARG.Gameplay;
 using YARG.Gameplay.HUD;
 using YARG.Gameplay.Player;
+using YARG.Helpers;
 using YARG.Integration.Link.Session;
 using YARG.Integration.Link.Transport;
 using YARG.Menu;
@@ -42,12 +43,18 @@ namespace YARG.Integration.Link
     /// so you see their notes being hit and missed, and show everyone's score in a scoreboard.
     /// </para>
     /// <para>
-    /// For now the session runs on <see cref="LoopbackLinkTransport"/> and is set up from the command line
-    /// (or environment variables, handy in the Editor). By default the game hosts on
-    /// <see cref="DEFAULT_PORT"/>. To join, pass <c>-link-join loopback:127.0.0.1:36120</c>
-    /// (<c>YARG_LINK_JOIN</c>). <c>-link-port</c> (<c>YARG_LINK_PORT</c>) picks the port, <c>-link-name</c>
-    /// (<c>YARG_LINK_NAME</c>) the name friends see, and <c>-link-lan</c> (<c>YARG_LINK_LAN=1</c>) accepts
-    /// connections from the local network.
+    /// Until there's a lobby, the session is set up from the command line (or environment variables, handy
+    /// in the Editor). By default the game hosts, and the ticket to join it is logged, shown in a toast and
+    /// copied to the clipboard. To join, pass <c>-link-join &lt;ticket&gt;</c> (<c>YARG_LINK_JOIN</c>).
+    /// <c>-link-name</c> (<c>YARG_LINK_NAME</c>) sets the name friends see.
+    /// </para>
+    /// <para>
+    /// The transport is <see cref="NativeLinkTransport"/> (iroh: hole punching, relays, encryption) unless
+    /// <c>-link-transport loopback</c> (<c>YARG_LINK_TRANSPORT</c>) or a <c>loopback:</c> ticket picks
+    /// <see cref="LoopbackLinkTransport"/>, which only reaches this machine or the LAN. Hosting falls back
+    /// to loopback when this platform has no native library. For loopback, <c>-link-port</c>
+    /// (<c>YARG_LINK_PORT</c>) picks the port (<see cref="DEFAULT_PORT"/> by default) and <c>-link-lan</c>
+    /// (<c>YARG_LINK_LAN=1</c>) accepts connections from the local network.
     /// </para>
     /// </remarks>
     public class LinkController : MonoBehaviour
@@ -88,6 +95,10 @@ namespace YARG.Integration.Link
         private double? _startAt;
         private string  _cancelReason;
 
+        // How we last saw each directly connected member's connection, to log changes
+        private readonly Dictionary<string, LinkPath> _paths = new();
+        private double _nextPathCheck;
+
         // Song a friend asked us to load, while we're still in difficulty select
         private string _remoteRequestHash;
 
@@ -124,6 +135,7 @@ namespace YARG.Integration.Link
             if (!linkEnabled)
             {
                 if (_session != null) Close();
+                _nextOpenTime = 0;
                 return;
             }
 
@@ -134,7 +146,7 @@ namespace YARG.Integration.Link
                 if (_session == null) return;
             }
 
-            if (_joinTicket != null && !_session.IsConnected && Now >= _nextJoinTime)
+            if (_joinTicket != null && !_session.IsConnected && !_session.IsJoining && Now >= _nextJoinTime)
             {
                 _nextJoinTime = Now + REJOIN_INTERVAL;
                 Join();
@@ -142,6 +154,7 @@ namespace YARG.Integration.Link
 
             _session.SetLocalScene(SceneName(GlobalVariables.Instance.CurrentScene));
             _session.Update();
+            LogPathChanges();
 
             CheckRemoteRequestAbandoned();
             CheckSongEnded();
@@ -180,10 +193,34 @@ namespace YARG.Integration.Link
 
             var role = string.IsNullOrWhiteSpace(join) ? LinkRole.Host : LinkRole.Join;
 
-            ILinkTransport transport;
+            string kind = CommandLineArgs.LinkTransport ?? Environment.GetEnvironmentVariable("YARG_LINK_TRANSPORT");
+            if (string.IsNullOrWhiteSpace(kind))
+            {
+                kind = join != null && join.Trim().StartsWith(LoopbackLinkTransport.TICKET_PREFIX,
+                    StringComparison.OrdinalIgnoreCase) ? "loopback" : "native";
+            }
+
+            ILinkTransport transport = null;
+            if (!kind.Equals("loopback", StringComparison.OrdinalIgnoreCase))
+            {
+                transport = CreateNativeTransport(out string problem);
+                if (transport == null && role == LinkRole.Join)
+                {
+                    YargLogger.LogFormatError("Link: {0}", problem);
+                    ToastManager.ToastError("Online link isn't available on this platform yet");
+                    // Retrying won't help; toggling the setting tries again
+                    _nextOpenTime = double.PositiveInfinity;
+                    return;
+                }
+                if (transport == null)
+                {
+                    YargLogger.LogWarning($"Link: {problem}; hosting on the loopback transport instead");
+                }
+            }
+
             try
             {
-                transport = CreateTransport(port ?? (role == LinkRole.Host ? DEFAULT_PORT : 0), lan);
+                transport ??= CreateTransport(port ?? (role == LinkRole.Host ? DEFAULT_PORT : 0), lan);
             }
             catch (SocketException e) when (port == null && role == LinkRole.Host)
             {
@@ -228,12 +265,71 @@ namespace YARG.Integration.Link
             if (role == LinkRole.Host)
             {
                 YargLogger.LogInfo($"Link: hosting as {name}. Friends join with: -link-join {_session.LocalTicket}");
-                ToastManager.ToastInformation($"Hosting an online session: {_session.LocalTicket}");
+                GUIUtility.systemCopyBuffer = _session.LocalTicket;
+                ToastManager.ToastInformation("Hosting an online session. The invite code is on your clipboard.");
             }
             else
             {
                 _joinTicket = join.Trim();
                 _nextJoinTime = Now;
+            }
+        }
+
+        /// <summary>The iroh transport, or <c>null</c> (with why) if it can't be used here.</summary>
+        private static NativeLinkTransport CreateNativeTransport(out string problem)
+        {
+            string path;
+            try
+            {
+                path = NativeLinkLibrary.GetPath();
+            }
+            catch (IOException e)
+            {
+                problem = $"couldn't prepare the YargLink library: {e.Message}";
+                return null;
+            }
+
+            if (path == null)
+            {
+                problem = "there's no YargLink library for this platform";
+                return null;
+            }
+
+            try
+            {
+                var transport = new NativeLinkTransport(path, new NativeLinkConfig
+                {
+                    // The same identity every time, so an invite code keeps working
+                    KeyFile = Path.Combine(PathHelper.PersistentDataPath, "link", "secret.key"),
+                });
+                transport.Log = LogNative;
+                problem = null;
+                return transport;
+            }
+            catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException
+                or InvalidOperationException)
+            {
+                problem = e.Message;
+                return null;
+            }
+        }
+
+        private static void LogNative(NativeLogLevel level, string message)
+        {
+            switch (level)
+            {
+                case NativeLogLevel.Error:
+                    YargLogger.LogError($"Link (native): {message}");
+                    break;
+                case NativeLogLevel.Warning:
+                    YargLogger.LogWarning($"Link (native): {message}");
+                    break;
+                case NativeLogLevel.Info:
+                    YargLogger.LogInfo($"Link (native): {message}");
+                    break;
+                default:
+                    YargLogger.LogDebug($"Link (native): {message}");
+                    break;
             }
         }
 
@@ -278,6 +374,29 @@ namespace YARG.Integration.Link
             }
         }
 
+        /// <summary>
+        /// Log when a connection switches between direct and relayed, which says a lot about how a
+        /// session will feel.
+        /// </summary>
+        private void LogPathChanges()
+        {
+            if (Now < _nextPathCheck) return;
+            _nextPathCheck = Now + 2.0;
+
+            foreach (var member in _session.Members)
+            {
+                if (member.Peer == null) continue;
+
+                var stats = _session.GetStats(member);
+                if (!stats.Connected) continue;
+                if (_paths.TryGetValue(member.Id, out var last) && last == stats.Path) continue;
+
+                _paths[member.Id] = stats.Path;
+                string rtt = stats.Rtt is { } r ? $"{r.TotalMilliseconds:0} ms" : "unknown";
+                YargLogger.LogInfo($"Link: connection to {member.Name} is {stats.Path}, round trip {rtt}");
+            }
+        }
+
         private void Close()
         {
             _session?.Dispose();
@@ -288,6 +407,7 @@ namespace YARG.Integration.Link
             _lastProblem = null;
             _remoteRequestHash = null;
             _remoteSetups.Clear();
+            _paths.Clear();
             _shared = null;
         }
 

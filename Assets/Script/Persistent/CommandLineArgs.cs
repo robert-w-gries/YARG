@@ -41,7 +41,13 @@ namespace YARG
         private const string LINK_JOIN_ARG = "-link-join";
 
         /// <summary>
-        /// Online link (development): the port to accept connections on.
+        /// Online link (development): <c>native</c> (iroh, the default) or <c>loopback</c> (plain TCP/UDP on
+        /// this machine or the LAN, for development).
+        /// </summary>
+        private const string LINK_TRANSPORT_ARG = "-link-transport";
+
+        /// <summary>
+        /// Online link (development, loopback transport): the port to accept connections on.
         /// </summary>
         private const string LINK_PORT_ARG = "-link-port";
 
@@ -51,7 +57,8 @@ namespace YARG
         private const string LINK_NAME_ARG = "-link-name";
 
         /// <summary>
-        /// Online link (development): accept connections from the local network, not just this machine.
+        /// Online link (development, loopback transport): accept connections from the local network, not just
+        /// this machine.
         /// </summary>
         private const string LINK_LAN_ARG = "-link-lan";
 
@@ -63,8 +70,9 @@ namespace YARG
         public static string DownloadLocation   { get; private set; }
         public static string PersistentDataPath { get; private set; }
 
-        public static string LinkJoin { get; private set; }
-        public static int?   LinkPort { get; private set; }
+        public static string LinkJoin      { get; private set; }
+        public static string LinkTransport { get; private set; }
+        public static int?   LinkPort      { get; private set; }
         public static string LinkName { get; private set; }
         public static bool   LinkLan  { get; private set; }
 
@@ -114,6 +122,14 @@ namespace YARG
                         if (i < args.Length)
                         {
                             LinkJoin = args[i];
+                        }
+
+                        break;
+                    case LINK_TRANSPORT_ARG:
+                        i++;
+                        if (i < args.Length)
+                        {
+                            LinkTransport = args[i];
                         }
 
                         break;

@@ -145,6 +145,12 @@ namespace YARG.Integration.Link.Session
         /// </summary>
         public bool IsConnected => Role == LinkRole.Host || _hostAccepted;
 
+        /// <summary>
+        /// Joiner only: whether a <see cref="Join"/> is still in progress (connecting, or waiting for the
+        /// host to accept us). Connecting through NAT can take several seconds.
+        /// </summary>
+        public bool IsJoining => _hostPeer != null && !_hostAccepted;
+
         public SongInfo PendingStart => _coordinator.PendingSong;
 
         public LinkSession(ILinkTransport transport, LinkRole role, LinkSessionOptions options, Func<double> clock)
