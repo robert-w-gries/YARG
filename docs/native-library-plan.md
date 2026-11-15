@@ -280,9 +280,9 @@ Phase 2 notes (2026-11-14):
 
 ### Phase 3: cross-platform CI
 
-- [x] `native-link.yml` with Windows, Linux and macOS jobs, plus the export, architecture, glibc and signature checks. (Written; not run on GitHub yet.)
+- [x] `native-link.yml` with Windows, Linux and macOS jobs, plus the export, architecture, glibc and signature checks.
 - [x] `NativeBuild` `cargo` backend and the byte-identical check.
-- [ ] Commit the binaries under `Assets/Plugins/YargLink/{Windows,Linux,Mac}` with Unity `.meta` platform settings. (Linux binary and all `.meta` files done; Windows and macOS binaries come from the first CI run.)
+- [x] Commit the binaries under `Assets/Plugins/YargLink/{Windows,Linux,Mac}` with Unity `.meta` platform settings.
 - [ ] Test across platforms: Windows ↔ macOS ↔ Linux.
 
 Phase 3 notes (2026-11-15):
@@ -299,7 +299,8 @@ Phase 3 notes (2026-11-15):
   bytes. Without `--remap-path-prefix` they can't: the library embeds about 800 crate paths in panic
   locations. A simulated CI job (NativeBuild in `ubuntu:20.04` at GitHub's paths) matched the
   committed `.so`. The flags are passed as `CARGO_ENCODED_RUSTFLAGS`, so paths with spaces work.
-  Windows isn't compared, as with YargAudio. The check is unproven on macOS until CI runs.
+  Windows isn't compared, as with YargAudio. On GitHub, the Linux and macOS builds match the
+  committed plugins byte for byte.
 - Outside `ubuntu:20.04`, NativeBuild builds the Linux library in a docker container of that image,
   with the toolchain and crates cached in docker volumes. That replaces `build-linux.sh`, which
   built without the path remapping.
@@ -311,7 +312,20 @@ Phase 3 notes (2026-11-15):
 - `Tests/YARG.Link.Tests/YARG.Link.Tests.csproj` was never committed (`.gitignore` ignores
   `*.csproj`) and has been added with an exception. With `YARG_LINK_REQUIRE_NATIVE=1`, which
   NativeBuild sets, a missing library fails the native tests instead of skipping them.
-- Linux binary: 11.8 MB, newest glibc symbol 2.30.
+- Binaries: Windows 10.0 MB, Linux 11.8 MB (newest glibc symbol 2.30), macOS universal 18.0 MB.
+  The Windows and macOS plugins are the CI builds (fetched from the run's artifacts).
+- CI runs on the fork through a draft PR (`online-native` → `dev`), because `workflow_dispatch`
+  only works for workflows on the default branch. First green run: 43684107533, all three jobs.
+  macOS: both slices `minos 11.0` with `LC_UUID`, arm64 signature `adhoc,linker-signed`, C harness
+  passing on both slices (x86_64 under Rosetta).
+- **macOS hang in `LoopbackLinkTransport.Dispose`, fixed.** The accept and UDP threads blocked in
+  `AcceptTcpClient` and `UdpClient.Receive`. On Unix, .NET's `Socket.Dispose` wakes such a thread
+  with `shutdown()` and waits for it, but on macOS `shutdown()` doesn't wake a listening or
+  unconnected UDP socket, so `Dispose` never returned (in the game, it would freeze the main thread).
+  The loops now use the async calls. The C# tests run with `--blame-hang-timeout 3m`, so a hang
+  fails the job and names the test.
+- NativeBuild only sets `CreateNoWindow` on children whose output it captures. Before, the output
+  of the other children (cargo, the tests) was lost on Windows; this applied to YargAudio too.
 
 ### Phase 4: MVP polish (demo-ready)
 
