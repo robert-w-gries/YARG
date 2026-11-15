@@ -271,7 +271,9 @@ namespace YARG.Integration.Link.Transport
                 TcpClient client;
                 try
                 {
-                    client = _listener.AcceptTcpClient();
+                    // Async, not AcceptTcpClient: on macOS, disposing a socket that a thread is
+                    // blocked on never wakes that thread, and Dispose then waits forever.
+                    client = _listener.AcceptTcpClientAsync().GetAwaiter().GetResult();
                 }
                 catch (Exception e) when (e is SocketException or ObjectDisposedException or InvalidOperationException)
                 {
@@ -472,7 +474,10 @@ namespace YARG.Integration.Link.Transport
                 byte[] bytes;
                 try
                 {
-                    bytes = _udp.Receive(ref remote);
+                    // Async for the same reason as in AcceptLoop
+                    var received = _udp.ReceiveAsync().GetAwaiter().GetResult();
+                    bytes = received.Buffer;
+                    remote = received.RemoteEndPoint;
                 }
                 catch (ObjectDisposedException)
                 {
