@@ -105,6 +105,27 @@ namespace YARG.Gameplay
         public BackgroundManager BackgroundManager { get; private set; }
         public EngineManager EngineManager { get; private set; }
 
+        // Online link: one engine manager per friend, so their players never count toward this band's
+        // score, combo, star power, unisons or fail meter
+        private readonly Dictionary<string, EngineManager> _remoteEngineManagers = new();
+
+        /// <summary>
+        /// The engine manager a player's engine belongs to: <see cref="EngineManager"/> for this game's own
+        /// players, and a separate one per friend for players mirrored over the online link.
+        /// </summary>
+        public EngineManager EngineManagerFor(YargPlayer player)
+        {
+            var feed = player.RemoteFeed;
+            if (feed == null) return EngineManager;
+
+            if (!_remoteEngineManagers.TryGetValue(feed.Member, out var manager))
+            {
+                manager = new EngineManager();
+                _remoteEngineManagers.Add(feed.Member, manager);
+            }
+            return manager;
+        }
+
         public SongEntry Song  { get; private set; }
         public SongChart    Chart { get; private set; }
 
@@ -212,6 +233,9 @@ namespace YARG.Gameplay
         /// Only these count towards local scores.
         /// </summary>
         private IEnumerable<BasePlayer> ActiveLocalPlayers => ActivePlayers.Where(player => !player.IsRemote);
+
+        private List<int[]> LocalStarScoreThresholds() =>
+            _players.Where(p => !p.IsRemote).Select(p => p.BaseEngine.StarScoreThresholds).ToList();
 
         private int _highwayCount;
 
@@ -338,6 +362,7 @@ namespace YARG.Gameplay
             foreach (var player in _players)
             {
                 player.GameplayUpdate();
+                if (player.IsRemote) continue;
                 totalScore += player.Score;
                 totalScore += player.BandBonusScore;
             }
@@ -881,7 +906,7 @@ namespace YARG.Gameplay
 
             int bandScore = 0;
             float bandStars = EngineManager.Stars;
-            foreach (var player in ActivePlayers)
+            foreach (var player in ActiveLocalPlayers)
             {
                 if (player.IsBot)
                 {
@@ -976,7 +1001,7 @@ namespace YARG.Gameplay
                     BandCombo = 0;
                 break;
                 case BandComboType.Lenient:
-                    BandCombo = ActivePlayers.Sum(e => e.Combo * e.BaseStats.BandComboUnits);
+                    BandCombo = ActiveLocalPlayers.Sum(e => e.Combo * e.BaseStats.BandComboUnits);
                 break;
             }
         }
@@ -1152,7 +1177,7 @@ namespace YARG.Gameplay
 
         public void DifficultyChanged(BasePlayer player)
         {
-            EngineManager.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(_players.ConvertAll(p => p.BaseEngine.StarScoreThresholds));
+            EngineManager.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(LocalStarScoreThresholds());
             EngineManager.ResetStars();
             if (_unisonDisplay.enabled)
             {

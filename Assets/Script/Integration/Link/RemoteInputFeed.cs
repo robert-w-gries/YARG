@@ -47,6 +47,12 @@ namespace YARG.Integration.Link
         /// <summary>The friend's game mode can be mirrored with a highway here.</summary>
         public bool Mirrored { get; }
 
+        /// <summary>
+        /// The friend's player is a bot. Bots record no inputs, so the mirrored player runs its own bot, which
+        /// plays the chart exactly the same way.
+        /// </summary>
+        public bool IsBot { get; }
+
         public string Instrument { get; }
         public string Difficulty { get; }
 
@@ -78,8 +84,10 @@ namespace YARG.Integration.Link
         private double _peakLateness;
         private double _lastPlaybackTime = double.NegativeInfinity;
 
-        public RemoteInputFeed(string member, int index, string name, string instrument, string difficulty, bool mirrored)
+        public RemoteInputFeed(string member, int index, string name, string instrument, string difficulty,
+            bool mirrored, bool isBot = false)
         {
+            IsBot = isBot;
             Member = member;
             Index = index;
             Name = name;

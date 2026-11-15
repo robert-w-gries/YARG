@@ -136,12 +136,12 @@ namespace YARG.Gameplay.Player
 
             if (EngineContainer != null)
             {
-                GameManager.EngineManager.Unregister(EngineContainer);
+                GameManager.EngineManagerFor(Player).Unregister(EngineContainer);
                 EngineContainer = null;
             }
 
             var engine = new YargProKeysEngine(NoteTrack, SyncTrack, EngineParams, Player.Profile.IsBot);
-            EngineContainer = GameManager.EngineManager.Register(engine, NoteTrack, Chart, Player.RockMeterPreset);
+            EngineContainer = GameManager.EngineManagerFor(Player).Register(engine, NoteTrack, Chart, Player.RockMeterPreset);
 
             HitWindow = EngineParams.HitWindow;
 

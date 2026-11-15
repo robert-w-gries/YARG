@@ -569,7 +569,9 @@ namespace YARG.Integration.Link
                 {
                     if (feed.Mirrored)
                     {
-                        players.Add((setup.Data.Frames[setup.FrameIndices[feed.Index]], setup.Data, feed));
+                        var frame = setup.Data.Frames[setup.FrameIndices[feed.Index]];
+                        frame.Profile.IsBot = feed.IsBot;
+                        players.Add((frame, setup.Data, feed));
                     }
                 }
             }
@@ -815,6 +817,9 @@ namespace YARG.Integration.Link
                     players.Add(new JObject
                     {
                         ["name"]       = profile.Name,
+                        // Bots don't record inputs (and the replay format doesn't say who's a bot), so
+                        // friends simulate a bot of their own
+                        ["bot"]        = profile.IsBot,
                         ["instrument"] = profile.CurrentInstrument.ToString(),
                         ["difficulty"] = profile.CurrentDifficulty.ToString(),
                         ["frame"]      = frameIndex,
@@ -926,7 +931,8 @@ namespace YARG.Integration.Link
                         (string) p["name"] ?? "Friend",
                         (string) p["instrument"] ?? "",
                         (string) p["difficulty"] ?? "",
-                        mirrored));
+                        mirrored,
+                        (bool?) p["bot"] ?? false));
                 }
 
                 return setup;
