@@ -46,6 +46,7 @@ namespace YARG.Integration.Link.Session
             Register<ByeMessage>("bye");
             Register<RosterMessage>("roster");
             Register<SceneMessage>("scene");
+            Register<StateMessage>("state");
             Register<ReadyMessage>("ready");
             Register<DeclineMessage>("decline");
             Register<LoadSongMessage>("load_song");
@@ -151,7 +152,44 @@ namespace YARG.Integration.Link.Session
     /// <summary>Both ways: the sender refuses the connection and is about to close it.</summary>
     public sealed class ByeMessage : LinkMessage
     {
+        /// <summary>For people: why the connection is closing.</summary>
         public string Reason;
+
+        /// <summary>For the game: one of <see cref="ByeCodes"/>, or <c>null</c> from an older version.</summary>
+        public string Code;
+    }
+
+    /// <summary>Why a connection was closed, so a joiner can tell whether trying again could help.</summary>
+    public static class ByeCodes
+    {
+        /// <summary>The other side left the session on purpose.</summary>
+        public const string LEFT = "left";
+
+        /// <summary>Different protocol or game versions. Retrying won't help until someone updates.</summary>
+        public const string INCOMPATIBLE = "incompatible";
+
+        /// <summary>The host removed this member from the session.</summary>
+        public const string KICKED = "kicked";
+
+        /// <summary>Refused for another reason (both hosting, already in the session, ...).</summary>
+        public const string REFUSED = "refused";
+    }
+
+    /// <summary>One of a member's players, as shown in the lobby.</summary>
+    public sealed class PlayerInfo : IEquatable<PlayerInfo>
+    {
+        public string Name;
+        /// <summary><c>Instrument</c> enum name, for example <c>"FiveFretGuitar"</c>.</summary>
+        public string Instrument;
+        /// <summary><c>Difficulty</c> enum name, for example <c>"Expert"</c>.</summary>
+        public string Difficulty;
+        public bool   Bot;
+
+        public bool Equals(PlayerInfo other) => other != null && Name == other.Name &&
+            Instrument == other.Instrument && Difficulty == other.Difficulty && Bot == other.Bot;
+
+        public override bool Equals(object obj) => obj is PlayerInfo other && Equals(other);
+        public override int GetHashCode() => Name?.GetHashCode() ?? 0;
     }
 
     public sealed class MemberInfo
@@ -161,6 +199,9 @@ namespace YARG.Integration.Link.Session
         /// <summary>See <see cref="SceneMessage.Scene"/>.</summary>
         public string Scene;
         public bool   Host;
+        /// <summary>See <see cref="StateMessage.Status"/>.</summary>
+        public string Status;
+        public List<PlayerInfo> Players;
     }
 
     /// <summary>Host → joiners, whenever someone joins, leaves or changes scene. Includes the receiver.</summary>
@@ -174,6 +215,17 @@ namespace YARG.Integration.Link.Session
     {
         /// <summary><c>"menu"</c>, <c>"gameplay"</c>, <c>"score"</c>, or anything else the game reports.</summary>
         public string Scene;
+    }
+
+    /// <summary>
+    /// Joiner → host, whenever it changes: what the joiner is doing and who is playing, for the lobby.
+    /// The session only passes it on; the game decides what the values mean.
+    /// </summary>
+    public sealed class StateMessage : LinkMessage
+    {
+        /// <summary>For example <c>"browsing"</c>, <c>"ready"</c> or <c>"playing"</c>.</summary>
+        public string Status;
+        public List<PlayerInfo> Players;
     }
 
     /// <summary>Joiner → host: gameplay for this song is loaded and holding for the start.</summary>

@@ -313,7 +313,8 @@ namespace YARG.Gameplay
             }
 
             var noFail = ReplayData?.NoFail ?? SettingsManager.Settings.NoFail.Value != NoFailMode.Off;
-            EngineManager.InitializeHappiness(noFail);
+            // Online link: only the host's band meter can fail the song
+            EngineManager.InitializeHappiness(noFail || BandMeterIsRemote);
             foreach (var remote in _remoteEngineManagers.Values)
             {
                 // A friend's fail meter is theirs to run; their mirrored highways keep going here regardless

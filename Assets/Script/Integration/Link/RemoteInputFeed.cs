@@ -53,6 +53,12 @@ namespace YARG.Integration.Link
         /// </summary>
         public bool IsBot { get; }
 
+        /// <summary>
+        /// The player counts toward this game's band fail meter. Set on the host, whose meter is the band's;
+        /// elsewhere friends' players get a separate meter that can't fail.
+        /// </summary>
+        public bool InHostBand { get; set; }
+
         public string Instrument { get; }
         public string Difficulty { get; }
 
