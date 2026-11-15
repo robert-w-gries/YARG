@@ -251,7 +251,9 @@ Phase 2 notes (2026-11-14):
 - [ ] Copy/paste invite code in the UI (works without Discord).
 - [ ] Clear error states: incompatible version, song missing, peer lost.
 - [ ] Connection quality indicator (direct/relay, RTT).
-- [ ] Recorded demo plus a short write-up for maintainers.
+- [ ] Host-authoritative band fail meter (see [Band fail meter](#band-fail-meter)).
+- [ ] Recorded demo plus a short write-up for maintainers. The write-up must list the
+  [known limitations](#known-limitations-call-out-in-the-mvp-write-up).
 
 ### Phase 5: after MVP
 
@@ -260,12 +262,49 @@ Phase 2 notes (2026-11-14):
 - [ ] Data Stream relay inside the game (if still wanted).
 - [ ] Reshape history and open the upstream PR.
 
+## Band fail meter
+
+Online players are one band, as in Rock Band: one crowd meter, failed players can be saved by a
+bandmate's star power, and when the meter empties the whole band fails on every screen. YARG's local
+multiplayer already behaves this way inside `EngineManager`.
+
+Each game mirrors its friends' players by replaying their inputs. A mirror runs about 150 ms behind
+its owner, so if every game ran the whole band in its own `EngineManager`, interactions between
+players (meter drain, saves, the star power multiplier, unisons) would happen at slightly different
+moments on each machine, and the games would disagree. So the host's `EngineManager` is the source of
+truth for the meter:
+
+- **Host:** friends' mirrored engines register in the host's main `EngineManager`, so its fail meter
+  works like local multiplayer.
+- **Clients:** their own `EngineManager` runs with fail off, and friends' mirrors keep their own
+  no-fail managers. The host sends its manager's decisions: the band failed (`failed`, already
+  implemented), a player failed or the band was revived (to lower or restore that player's highway),
+  and the meter value (so the client's meter shows the band's).
+
+Current state (2026-11-14): only the `failed` message exists. Any game whose own meter runs out sends
+it, and friends fail with it. Each game's meter only counts its own players for now, so a weak player
+on one machine can fail the band while the other machine's meter is fine.
+
+## Known limitations (call out in the MVP write-up)
+
+- **Scores can drift with star power.** `EngineManager` can't register an engine for the fail meter
+  alone. With friends' engines in the host's main manager, they also count toward its star power band
+  multiplier and unisons. A client's star power raises the host's multiplier, but the host's star
+  power doesn't raise the client's, because the client's game doesn't share them. Fails and saves stay
+  correct on both games; scores differ slightly when star power overlaps. A possible fix is a small
+  YARG.Core option to register an engine for the fail meter only, which needs the maintainers' go-ahead.
+- **The fail menu only affects the local game.** "Restart" and "continue with no fail" aren't synced.
+- **Pause isn't synced.** If a friend pauses, their highway freezes on everyone else's screen until
+  they resume.
+
 ## Open questions
 
 1. Do maintainers have a preferred direction for online play (P2P like ours or server-based like the `asimard1` fork)?
 2. Will maintainers accept Rust in the native build, or do they want a different language or approach?
 3. Is the lobby host-authoritative (the host runs the coordinator, as today), or does any member coordinate?
 4. Which minimum macOS version does YARG target?
+5. Would maintainers accept a YARG.Core option to register an engine for the fail meter only? It would
+   remove the star power score drift described under known limitations.
 
 ## This repository
 
