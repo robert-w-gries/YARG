@@ -256,7 +256,7 @@ namespace YARG.Gameplay.Player
                 engine = new YargVocalsEngine(NoteTrack, SyncTrack, EngineParams, Player.Profile.IsBot);
             }
 
-            EngineContainer = GameManager.EngineManager.Register(engine, NoteTrack, Player.Profile.HarmonyIndex, _chart, Player.RockMeterPreset);
+            EngineContainer = GameManager.EngineManagerFor(Player).Register(engine, NoteTrack, Player.Profile.HarmonyIndex, _chart, Player.RockMeterPreset);
 
             engine.OnComboIncrement += OnComboIncrement;
             engine.OnComboReset += OnComboReset;

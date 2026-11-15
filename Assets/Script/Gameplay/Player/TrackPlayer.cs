@@ -147,7 +147,7 @@ namespace YARG.Gameplay.Player
 
             Player.IsScoreValid = false;
             Player.DropOut();
-            GameManager.EngineManager.Unregister(EngineContainer);
+            GameManager.EngineManagerFor(Player).Unregister(EngineContainer);
 
             SetStemMuteState(muted: false);
             ClosePlayerMenu();
@@ -544,8 +544,8 @@ namespace YARG.Gameplay.Player
             CameraPositioner.Initialize(Player.CameraPreset);
             FinalizeTrackEffects();
 
-            GameManager.EngineManager.OnPlayerFailed += OnPlayerFailed;
-            GameManager.EngineManager.OnPlayerRevived += OnPlayerRevived;
+            GameManager.EngineManagerFor(Player).OnPlayerFailed += OnPlayerFailed;
+            GameManager.EngineManagerFor(Player).OnPlayerRevived += OnPlayerRevived;
         }
 
         public override void ChangeDifficulty(Difficulty difficulty)
@@ -1526,8 +1526,8 @@ namespace YARG.Gameplay.Player
         {
             base.GameplayDestroy();
 
-            GameManager.EngineManager.OnPlayerFailed -= OnPlayerFailed;
-            GameManager.EngineManager.OnPlayerRevived -= OnPlayerRevived;
+            GameManager.EngineManagerFor(Player).OnPlayerFailed -= OnPlayerFailed;
+            GameManager.EngineManagerFor(Player).OnPlayerRevived -= OnPlayerRevived;
         }
     }
 }

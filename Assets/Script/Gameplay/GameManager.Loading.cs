@@ -254,7 +254,7 @@ namespace YARG.Gameplay
             }
 
             YargLogger.LogFormatDebug("Calculating star cutoffs for {0} players", _players.Count);
-            EngineManager.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(_players.ConvertAll(p => p.BaseEngine.StarScoreThresholds));
+            EngineManager.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(LocalStarScoreThresholds());
             YargLogger.LogFormatDebug("Star score thresholds: {0}", string.Join(", ", EngineManager.StarScoreThresholds));
 
 
@@ -314,6 +314,11 @@ namespace YARG.Gameplay
 
             var noFail = ReplayData?.NoFail ?? SettingsManager.Settings.NoFail.Value != NoFailMode.Off;
             EngineManager.InitializeHappiness(noFail);
+            foreach (var remote in _remoteEngineManagers.Values)
+            {
+                // A friend's fail meter is theirs to run; their mirrored highways keep going here regardless
+                remote.InitializeHappiness(true);
+            }
             CrowdEventHandler?.UpdateCrowdMuteState(force: true);
 
             EngineManager.OnCodaStart += StartCoda;
