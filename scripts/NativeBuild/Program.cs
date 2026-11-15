@@ -340,7 +340,9 @@ internal static class ProcessRunner
             UseShellExecute = false,
             RedirectStandardOutput = captureOutput,
             RedirectStandardError = captureOutput,
-            CreateNoWindow = true,
+            // Without a window, a Windows child that isn't redirected has nowhere to write,
+            // and its output is lost.
+            CreateNoWindow = captureOutput,
         };
 
         foreach (string argument in argumentArray)

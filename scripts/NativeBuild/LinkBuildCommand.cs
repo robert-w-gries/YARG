@@ -317,7 +317,13 @@ internal static class LinkBuildCommand
         // The game's own bindings (NativeLinkTransport) and session layer, on this library.
         await ProcessRunner.RunAsync(
             "dotnet",
-            ["test", "Tests/YARG.Link.Tests", "--configuration", "Release"],
+            [
+                "test", "Tests/YARG.Link.Tests", "--configuration", "Release",
+                // One line per test, and a hung test is aborted and named instead of
+                // holding the job until the CI timeout.
+                "--logger", "console;verbosity=normal",
+                "--blame-hang-timeout", "3m", "--blame-hang-dump-type", "none",
+            ],
             repository.Root,
             new Dictionary<string, string>
             {
