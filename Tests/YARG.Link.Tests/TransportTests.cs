@@ -8,9 +8,21 @@ using YARG.Integration.Link.Transport;
 
 namespace YARG.Link.Tests
 {
-    public class LoopbackTransportTests
+    /// <summary>The <see cref="ILinkTransport"/> contract, on each transport.</summary>
+    [TestFixture("loopback")]
+    [TestFixture("native")]
+    public class TransportTests
     {
         private readonly List<IDisposable> _disposables = new();
+        private readonly string _kind;
+
+        public TransportTests(string kind)
+        {
+            _kind = kind;
+        }
+
+        private ILinkTransport NewTransport() =>
+            _kind == "native" ? NativeLibrary.Transport() : new LoopbackLinkTransport();
 
         [TearDown]
         public void TearDown()
@@ -19,9 +31,9 @@ namespace YARG.Link.Tests
             _disposables.Clear();
         }
 
-        private LoopbackLinkTransport Transport()
+        private ILinkTransport Transport()
         {
-            var t = new LoopbackLinkTransport();
+            var t = NewTransport();
             _disposables.Add(t);
             return t;
         }
@@ -55,6 +67,7 @@ namespace YARG.Link.Tests
         [Test]
         public void ParseTicket()
         {
+            if (_kind != "loopback") Assert.Ignore("loopback tickets only");
             Assert.That(LoopbackLinkTransport.ParseTicket("loopback:127.0.0.1:36120"), Is.EqualTo(("127.0.0.1", 36120)));
             Assert.That(LoopbackLinkTransport.ParseTicket(" localhost:5 "), Is.EqualTo(("localhost", 5)));
             Assert.Throws<FormatException>(() => LoopbackLinkTransport.ParseTicket("127.0.0.1"));
@@ -158,23 +171,23 @@ namespace YARG.Link.Tests
         [Test]
         public void ConnectFailureIsReportedAsDisconnect()
         {
-            int port;
-            using (var gone = new LoopbackLinkTransport())
+            string ticket;
+            using (var gone = NewTransport())
             {
-                port = gone.Port;
+                ticket = gone.LocalTicket;
             }
 
             var a = Transport();
-            var peer = a.Connect($"loopback:127.0.0.1:{port}");
-            var ev = WaitFor(a, e => e.Type == LinkEventType.PeerDisconnected);
+            var peer = a.Connect(ticket);
+            var ev = WaitFor(a, e => e.Type == LinkEventType.PeerDisconnected, timeoutSeconds: 10);
             Assert.That(ev.Peer, Is.EqualTo(peer));
-            Assert.That(ev.Reason, Does.Contain("couldn't connect"));
+            Assert.That(ev.Reason, Is.Not.Empty);
         }
 
         [Test]
         public void DisposeClosesPeers()
         {
-            var a = new LoopbackLinkTransport();
+            var a = NewTransport();
             var b = Transport();
             Pair(a, b);
 
@@ -202,6 +215,42 @@ namespace YARG.Link.Tests
             Assert.That(stats.Rtt.Value.TotalMilliseconds, Is.LessThan(100));
             Assert.That(stats.Path, Is.EqualTo(LinkPath.Direct));
             Assert.That(stats.BytesSent, Is.GreaterThan(0));
+        }
+            [Test]
+        public void GoodbyeBeforeDisconnectArrives()
+        {
+            var (a, b) = (Transport(), Transport());
+            var (atA, _) = Pair(a, b);
+
+            a.Send(atA, new byte[] { 42 }, Delivery.Reliable);
+            a.Disconnect(atA);
+
+            var seen = new List<LinkEvent>();
+            WaitFor(b, e => e.Type == LinkEventType.PeerDisconnected, seen);
+            Assert.That(seen.Where(e => e.Type == LinkEventType.Message).Select(e => e.Data[0]), Is.EqualTo(new[] { 42 }));
+        }
+
+        [Test]
+        public void GoodbyeBeforeDisposeArrives()
+        {
+            var a = NewTransport();
+            var b = Transport();
+            var (atA, _) = Pair(a, b);
+
+            a.Send(atA, new byte[] { 42 }, Delivery.Reliable);
+            a.Dispose();
+
+            var seen = new List<LinkEvent>();
+            WaitFor(b, e => e.Type == LinkEventType.PeerDisconnected, seen);
+            Assert.That(seen.Where(e => e.Type == LinkEventType.Message).Select(e => e.Data[0]), Is.EqualTo(new[] { 42 }));
+        }
+
+        [Test]
+        public void BadTicketThrowsFormatException()
+        {
+            var a = Transport();
+            Assert.Throws<FormatException>(() => a.Connect("definitely not a ticket"));
+            Assert.Throws<FormatException>(() => a.Connect(""));
         }
     }
 }

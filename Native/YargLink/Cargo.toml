@@ -1,0 +1,30 @@
+[package]
+name = "yarg-link"
+version = "0.1.0"
+edition = "2024"
+description = "Peer-to-peer transport for YARG's online play: iroh behind a small C interface"
+license = "LGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "yarg_link"
+# cdylib for the game; rlib so the Rust tests can call the exported functions directly
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bytes = "1.12.1"
+iroh = { version = "1.4.1", default-features = false, features = ["tls-ring", "portmapper", "fast-apple-datapath"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros", "io-util"] }
+tokio-util = "0.7.20"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "registry", "std"] }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+# Panics are caught at the FFI boundary; aborting would take the game down with us
+panic = "unwind"

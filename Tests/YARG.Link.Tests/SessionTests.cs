@@ -10,11 +10,22 @@ using YARG.Integration.Link.Transport;
 
 namespace YARG.Link.Tests
 {
-    /// <summary>Several sessions on real loopback transports, in one process.</summary>
+    /// <summary>Several sessions on real transports (loopback, and native when it's built), in one process.</summary>
+    [TestFixture("loopback")]
+    [TestFixture("native")]
     public class SessionTests
     {
         private static readonly Stopwatch Clock = Stopwatch.StartNew();
         private readonly List<Member> _all = new();
+        private readonly string _transport;
+
+        public SessionTests(string transport)
+        {
+            _transport = transport;
+        }
+
+        private ILinkTransport NewTransport() =>
+            _transport == "native" ? NativeLibrary.Transport() : new LoopbackLinkTransport();
 
         private sealed class Member : IDisposable
         {
@@ -26,10 +37,10 @@ namespace YARG.Link.Tests
             public readonly List<string> Disconnects = new();
             public readonly List<(string From, string Kind, JObject Data)> Data = new();
 
-            public Member(LinkRole role, string name, string game = "test")
+            public Member(ILinkTransport transport, LinkRole role, string name, string game = "test")
             {
                 var options = new LinkSessionOptions { Name = name, GameVersion = game, StartLeadSeconds = 0.5 };
-                Session = new LinkSession(new LoopbackLinkTransport(), role, options, () => Clock.Elapsed.TotalSeconds);
+                Session = new LinkSession(transport, role, options, () => Clock.Elapsed.TotalSeconds);
                 Session.LogInfo = Log.Add;
                 Session.LogWarning = m => Log.Add("WARN " + m);
                 Session.LoadSongRequested += LoadRequests.Add;
@@ -59,7 +70,7 @@ namespace YARG.Link.Tests
 
         private Member Add(LinkRole role, string name, string game = "test")
         {
-            var m = new Member(role, name, game);
+            var m = new Member(NewTransport(), role, name, game);
             _all.Add(m);
             return m;
         }
@@ -177,6 +188,24 @@ namespace YARG.Link.Tests
 
             PumpUntil(() => a.Cancels.Count == 1);
             Assert.That(a.Cancels[0], Does.Contain("already starting"));
+        }
+
+        [Test]
+        public void JoiningUntilTheHostAccepts()
+        {
+            var host = Add(LinkRole.Host, "Host");
+            var a = Add(LinkRole.Join, "A");
+            Assert.That(a.Session.IsJoining, Is.False);
+
+            a.Session.Join(host.Session.LocalTicket);
+            Assert.That(a.Session.IsJoining, Is.True);
+            PumpUntil(() => a.Session.IsConnected);
+            Assert.That(a.Session.IsJoining, Is.False);
+
+            host.Dispose();
+            _all.Remove(host);
+            PumpUntil(() => a.Disconnects.Count == 1);
+            Assert.That(a.Session.IsJoining, Is.False);
         }
 
         [Test]
