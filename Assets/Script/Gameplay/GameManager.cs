@@ -19,6 +19,7 @@ using YARG.Gameplay.Player;
 using YARG.Gameplay.Visuals;
 using YARG.Input;
 using YARG.Integration;
+using YARG.Integration.Link;
 using YARG.Localization;
 using YARG.Menu.Navigation;
 using YARG.Menu.Persistent;
@@ -1011,16 +1012,40 @@ namespace YARG.Gameplay
             BandCombo += amount;
         }
 
-        private async void OnSongFailed()
+        private void OnSongFailed()
         {
             if (SettingsManager.Settings.NoFail.Value != NoFailMode.Off || IsPractice)
             {
                 return;
             }
 
+            FailSong(fromLink: false);
+        }
+
+        /// <summary>
+        /// Fail the song because a friend's game failed it over the online link. The band fails together,
+        /// whatever our own meter or no fail setting says, or we'd keep playing next to their frozen track.
+        /// </summary>
+        public void FailFromLink()
+        {
+            if (IsPractice)
+            {
+                return;
+            }
+
+            FailSong(fromLink: true);
+        }
+
+        private async void FailSong(bool fromLink)
+        {
             if (!PlayerHasFailed)
             {
                 PlayerHasFailed = true;
+
+                if (!fromLink)
+                {
+                    LinkController.Instance?.ReportSongFailed(this);
+                }
 
                 if (_players.Count > 1)
                 {

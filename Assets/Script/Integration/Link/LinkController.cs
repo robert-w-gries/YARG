@@ -78,6 +78,7 @@ namespace YARG.Integration.Link
 
         private const string KIND_SETUP  = "setup";
         private const string KIND_INPUTS = "inputs";
+        private const string KIND_FAILED = "failed";
 
         public static LinkController Instance { get; private set; }
 
@@ -682,12 +683,42 @@ namespace YARG.Integration.Link
                             existing.Receive(data, Now);
                         }
                         break;
+
+                    case KIND_FAILED:
+                        OnFriendFailed(member, data);
+                        break;
                 }
             }
             catch (Exception e)
             {
                 YargLogger.LogException(e, $"Link: bad {kind} data from {member.Name}");
             }
+        }
+
+        /// <summary>
+        /// Our band meter ran out. Tell friends so they fail with us: once we pause, our inputs stop
+        /// and their mirror of our track would just freeze.
+        /// </summary>
+        public void ReportSongFailed(GameManager gameManager)
+        {
+            if (_session == null || _shared == null || _shared.GameManager != gameManager) return;
+
+            YargLogger.LogInfo("Link: we failed the song, telling friends");
+            _session.Broadcast(KIND_FAILED, new JObject
+            {
+                ["song"] = _shared.SongHash,
+                ["time"] = gameManager.SongTime,
+            });
+        }
+
+        private void OnFriendFailed(LinkMember member, JObject data)
+        {
+            var gm = _shared?.GameManager;
+            if (gm == null || (string) data["song"] != _shared.SongHash) return;
+            if (!gm.IsSongStarted || gm.PlayerHasFailed) return;
+
+            YargLogger.LogInfo($"Link: {member.Name} failed the song at {(double?) data["time"] ?? 0:0.00}s, failing with them");
+            gm.FailFromLink();
         }
 
         /// <summary>
