@@ -25,6 +25,21 @@ namespace YARG.Integration.Link.Session
         /// <summary>See <see cref="SceneMessage.Scene"/>.</summary>
         public string Scene { get; internal set; } = LinkSession.SCENE_MENU;
 
+        /// <summary>What the member is doing, as they report it. See <see cref="StateMessage.Status"/>.</summary>
+        public string Status { get; internal set; }
+
+        /// <summary>The member's players, as they report them.</summary>
+        public IReadOnlyList<PlayerInfo> Players { get; internal set; } = Array.Empty<PlayerInfo>();
+
+        /// <summary>Once the member has left: why, if known.</summary>
+        public string LeftReason { get; internal set; }
+
+        /// <summary>
+        /// Once the member has left: whether the connection was lost rather than closed on purpose. Only the
+        /// host knows; for joiners it's always <c>false</c>.
+        /// </summary>
+        public bool ConnectionLost { get; internal set; }
+
         /// <summary>The direct connection to this member, if we have one (the host has one to everyone).</summary>
         internal PeerId? Peer { get; set; }
 
@@ -35,6 +50,27 @@ namespace YARG.Integration.Link.Session
         }
 
         public override string ToString() => $"{Name} ({Id})";
+    }
+
+    /// <summary>Why a joiner lost its host.</summary>
+    public readonly struct LinkDisconnect
+    {
+        /// <summary>For people.</summary>
+        public readonly string Reason;
+
+        /// <summary>One of <see cref="ByeCodes"/>, or <c>null</c> if the connection just dropped.</summary>
+        public readonly string Code;
+
+        public LinkDisconnect(string reason, string code)
+        {
+            Reason = reason;
+            Code = code;
+        }
+
+        /// <summary>Whether joining again could work without anyone changing anything.</summary>
+        public bool CanRetry => Code is null or ByeCodes.LEFT;
+
+        public override string ToString() => Code == null ? Reason : $"{Reason} ({Code})";
     }
 
     public sealed class LinkSessionOptions
@@ -83,6 +119,7 @@ namespace YARG.Integration.Link.Session
 
             /// <summary>Why the other side said it's closing, if it did.</summary>
             public string ByeReason;
+            public string ByeCode;
 
             public PeerState(PeerId peer, double connectedAt)
             {
@@ -100,6 +137,8 @@ namespace YARG.Integration.Link.Session
         private readonly Dictionary<string, LinkMember> _members = new();
 
         private string _localScene = SCENE_MENU;
+        private string _localStatus;
+        private List<PlayerInfo> _localPlayers = new();
         private double _nextTick;
         private bool   _disposed;
 
@@ -125,7 +164,12 @@ namespace YARG.Integration.Link.Session
         public event Action<string> StartCancelled;
 
         /// <summary>Joiner only: lost the host, or the host refused us. The session is empty until rejoined.</summary>
-        public event Action<string> Disconnected;
+        public event Action<LinkDisconnect> Disconnected;
+
+        /// <summary>
+        /// Host only: we turned away someone trying to join, with the reason and one of <see cref="ByeCodes"/>.
+        /// </summary>
+        public event Action<string, string> PeerRefused;
 
         public Action<string> LogInfo;
         public Action<string> LogWarning;
@@ -200,6 +244,51 @@ namespace YARG.Integration.Link.Session
             {
                 SendToHost(new SceneMessage { Scene = scene });
             }
+        }
+
+        /// <summary>
+        /// What we're doing and who is playing, for the other members' lobby. Only sent when it changes, so it's
+        /// fine to call every frame.
+        /// </summary>
+        public void SetLocalState(string status, IReadOnlyList<PlayerInfo> players)
+        {
+            players ??= Array.Empty<PlayerInfo>();
+            if (status == _localStatus && players.SequenceEqual(_localPlayers)) return;
+
+            _localStatus = status;
+            _localPlayers = players.ToList();
+
+            if (Role == LinkRole.Host)
+            {
+                SendRoster();
+            }
+            else
+            {
+                SendToHost(new StateMessage { Status = status, Players = _localPlayers });
+            }
+        }
+
+        /// <summary>The players last passed to <see cref="SetLocalState"/>.</summary>
+        public IReadOnlyList<PlayerInfo> LocalPlayers => _localPlayers;
+
+        /// <summary>The status last passed to <see cref="SetLocalState"/>.</summary>
+        public string LocalStatus => _localStatus;
+
+        /// <summary>Host only: remove a joiner from the session.</summary>
+        public void Kick(LinkMember member)
+        {
+            if (Role != LinkRole.Host)
+            {
+                throw new InvalidOperationException("Only the host can remove members");
+            }
+
+            if (member?.Peer is not { } peer || !_peers.TryGetValue(peer, out var state) || state.Member != member)
+            {
+                return;
+            }
+
+            Info($"removing {member}");
+            Refuse(state, "the host removed you from the session", ByeCodes.KICKED);
         }
 
         /// <summary>Our gameplay for <paramref name="song"/> is loaded and holding for the start.</summary>
@@ -293,7 +382,7 @@ namespace YARG.Integration.Link.Session
 
             foreach (var state in _peers.Values)
             {
-                Send(state.Peer, new ByeMessage { Reason = "left the session" }, Delivery.Reliable);
+                Send(state.Peer, new ByeMessage { Reason = "left the session", Code = ByeCodes.LEFT }, Delivery.Reliable);
             }
             _transport.Dispose();
             _peers.Clear();
@@ -311,7 +400,7 @@ namespace YARG.Integration.Link.Session
 
             if (Role == LinkRole.Join && peer != _hostPeer)
             {
-                Refuse(state, "this game isn't hosting");
+                Refuse(state, "this game isn't hosting", ByeCodes.REFUSED);
                 return;
             }
 
@@ -329,15 +418,17 @@ namespace YARG.Integration.Link.Session
         {
             _peers.TryGetValue(peer, out var state);
             _peers.Remove(peer);
+            bool lost = state?.ByeReason == null;
             reason = state?.ByeReason ?? reason;
 
             if (Role == LinkRole.Join)
             {
                 if (peer != _hostPeer) return;
 
-                Info($"left the host: {reason}");
+                var disconnect = new LinkDisconnect(reason, state?.ByeCode);
+                Info($"left the host: {disconnect}");
                 ForgetHost();
-                Raise(() => Disconnected?.Invoke(reason));
+                Raise(() => Disconnected?.Invoke(disconnect));
                 return;
             }
 
@@ -345,6 +436,8 @@ namespace YARG.Integration.Link.Session
             if (member == null) return;
 
             _members.Remove(member.Id);
+            member.LeftReason = reason;
+            member.ConnectionLost = lost;
             Info($"{member} left: {reason}");
             Raise(() => MemberLeft?.Invoke(member));
             SendRoster();
@@ -376,6 +469,7 @@ namespace YARG.Integration.Link.Session
                     return;
                 case ByeMessage bye:
                     state.ByeReason = bye.Reason ?? "left";
+                    state.ByeCode = bye.Code;
                     return;
             }
 
@@ -405,19 +499,22 @@ namespace YARG.Integration.Link.Session
 
             if (hello.Protocol != LinkProtocol.VERSION)
             {
-                Refuse(state, $"incompatible online protocol (theirs: {hello.Protocol}, ours: {LinkProtocol.VERSION})");
+                // The reason reaches both sides, so it doesn't say which is whose
+                Refuse(state, $"incompatible online protocol versions ({hello.Protocol} and {LinkProtocol.VERSION})",
+                    ByeCodes.INCOMPATIBLE);
                 return;
             }
 
             if (hello.Game != _options.GameVersion)
             {
-                Refuse(state, $"different game versions (theirs: {hello.Game}, ours: {_options.GameVersion})");
+                Refuse(state, $"different game versions ({hello.Game} and {_options.GameVersion})",
+                    ByeCodes.INCOMPATIBLE);
                 return;
             }
 
             if (string.IsNullOrEmpty(hello.Member) || hello.Member == LocalMemberId || _members.ContainsKey(hello.Member))
             {
-                Refuse(state, "already in this session");
+                Refuse(state, "already in this session", ByeCodes.REFUSED);
                 return;
             }
 
@@ -431,7 +528,7 @@ namespace YARG.Integration.Link.Session
             {
                 if (hello.Host)
                 {
-                    Refuse(state, "both games are hosting");
+                    Refuse(state, "both games are hosting", ByeCodes.REFUSED);
                     return;
                 }
 
@@ -446,7 +543,7 @@ namespace YARG.Integration.Link.Session
             {
                 if (!hello.Host)
                 {
-                    Refuse(state, "that game isn't hosting");
+                    Refuse(state, "that game isn't hosting", ByeCodes.REFUSED);
                     return;
                 }
 
@@ -455,6 +552,7 @@ namespace YARG.Integration.Link.Session
                 _hostAccepted = true;
                 Info($"joined {member}'s session");
                 SendToHost(new SceneMessage { Scene = _localScene });
+                SendToHost(new StateMessage { Status = _localStatus, Players = _localPlayers });
             }
         }
 
@@ -466,6 +564,12 @@ namespace YARG.Integration.Link.Session
                     member.Scene = scene.Scene ?? SCENE_MENU;
                     SendRoster();
                     Apply(_coordinator.OnTick(Present(), _clock()));
+                    break;
+
+                case StateMessage memberState:
+                    member.Status = memberState.Status;
+                    member.Players = memberState.Players ?? new List<PlayerInfo>();
+                    SendRoster();
                     break;
 
                 case ReadyMessage ready when ready.Song?.Hash != null:
@@ -560,6 +664,8 @@ namespace YARG.Integration.Link.Session
                 member.Name = info.Name ?? member.Name;
                 member.Scene = info.Scene ?? SCENE_MENU;
                 member.IsHost = info.Host;
+                member.Status = info.Status;
+                member.Players = info.Players ?? new List<PlayerInfo>();
             }
 
             var left = _members.Values.Where(m => !seen.Contains(m.Id)).ToList();
@@ -658,10 +764,18 @@ namespace YARG.Integration.Link.Session
             if (Role != LinkRole.Host) return;
 
             var roster = new RosterMessage();
-            roster.Members.Add(new MemberInfo { Id = LocalMemberId, Name = LocalName, Scene = _localScene, Host = true });
+            roster.Members.Add(new MemberInfo
+            {
+                Id = LocalMemberId, Name = LocalName, Scene = _localScene, Host = true,
+                Status = _localStatus, Players = _localPlayers,
+            });
             foreach (var member in _members.Values)
             {
-                roster.Members.Add(new MemberInfo { Id = member.Id, Name = member.Name, Scene = member.Scene });
+                roster.Members.Add(new MemberInfo
+                {
+                    Id = member.Id, Name = member.Name, Scene = member.Scene,
+                    Status = member.Status, Players = member.Players.ToList(),
+                });
             }
 
             foreach (var member in _members.Values)
@@ -688,12 +802,18 @@ namespace YARG.Integration.Link.Session
             _transport.Send(peer, bytes, delivery);
         }
 
-        private void Refuse(PeerState state, string reason)
+        private void Refuse(PeerState state, string reason, string code)
         {
             Warn($"refusing {state.Peer}: {reason}");
             state.ByeReason ??= reason;
-            Send(state.Peer, new ByeMessage { Reason = reason }, Delivery.Reliable);
+            state.ByeCode ??= code;
+            Send(state.Peer, new ByeMessage { Reason = reason, Code = code }, Delivery.Reliable);
             _transport.Disconnect(state.Peer);
+
+            if (Role == LinkRole.Host && code != ByeCodes.KICKED)
+            {
+                Raise(() => PeerRefused?.Invoke(reason, code));
+            }
         }
 
         private void ForgetHost()

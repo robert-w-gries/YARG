@@ -107,17 +107,19 @@ namespace YARG.Gameplay
         public EngineManager EngineManager { get; private set; }
 
         // Online link: one engine manager per friend, so their players never count toward this band's
-        // score, combo, star power, unisons or fail meter
+        // score, combo, star power, unisons or fail meter (except on the host, whose fail meter is the band's)
         private readonly Dictionary<string, EngineManager> _remoteEngineManagers = new();
 
         /// <summary>
         /// The engine manager a player's engine belongs to: <see cref="EngineManager"/> for this game's own
-        /// players, and a separate one per friend for players mirrored over the online link.
+        /// players, and a separate one per friend for players mirrored over the online link. On the host of an
+        /// online session, friends' players join <see cref="EngineManager"/> too, so its fail meter covers
+        /// the whole band.
         /// </summary>
         public EngineManager EngineManagerFor(YargPlayer player)
         {
             var feed = player.RemoteFeed;
-            if (feed == null) return EngineManager;
+            if (feed == null || feed.InHostBand) return EngineManager;
 
             if (!_remoteEngineManagers.TryGetValue(feed.Member, out var manager))
             {
@@ -125,6 +127,29 @@ namespace YARG.Gameplay
                 _remoteEngineManagers.Add(feed.Member, manager);
             }
             return manager;
+        }
+
+        /// <summary>
+        /// The band's fail meter: <see cref="EngineManager"/>'s, or in an online session that we aren't hosting,
+        /// the host's.
+        /// </summary>
+        public float BandHappiness => LinkController.Instance?.HostBandHappiness(this) ?? EngineManager.Happiness;
+
+        /// <summary>
+        /// Online link: the host's band meter decides when this song fails, so our own meter can't.
+        /// </summary>
+        private bool BandMeterIsRemote => LinkController.Instance?.IsBandMeterRemote(this) ?? false;
+
+        /// <summary>
+        /// Online link: the host's band meter revived the band (a bandmate's star power saved a failed player).
+        /// </summary>
+        public void ReviveFromLink()
+        {
+            EngineManager.RevivePlayer();
+            foreach (var manager in _remoteEngineManagers.Values)
+            {
+                manager.RevivePlayer();
+            }
         }
 
         public SongEntry Song  { get; private set; }
@@ -1078,14 +1103,14 @@ namespace YARG.Gameplay
         private void OnNoFailModeChanged(NoFailMode mode)
         {
             // If we're going from no fail to fail and happiness would result in a player being in the red, reset happiness
-            if (mode == NoFailMode.Off && EngineManager.GetLowestHappiness()?.Happiness <= 0.333f)
+            if (mode == NoFailMode.Off && EngineManager.GetLowestHappiness()?.Happiness <= 0.333f && !BandMeterIsRemote)
             {
                 EngineManager.InitializeHappiness(false);
             }
 
             InvalidateScores("Menu.Toast.NoFailScore");
 
-            EngineManager.NoFailChanged(mode != NoFailMode.Off);
+            EngineManager.NoFailChanged(mode != NoFailMode.Off || BandMeterIsRemote);
             _failMeter.SetActive(mode != NoFailMode.NoMeter);
         }
 

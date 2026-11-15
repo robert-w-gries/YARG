@@ -23,6 +23,7 @@ using YARG.Integration.Link.Session;
 using YARG.Integration.Link.Transport;
 using YARG.Menu;
 using YARG.Menu.Persistent;
+using YARG.Player;
 using YARG.Settings;
 using YARG.Song;
 
@@ -43,10 +44,15 @@ namespace YARG.Integration.Link
     /// so you see their notes being hit and missed, and show everyone's score in a scoreboard.
     /// </para>
     /// <para>
-    /// Until there's a lobby, the session is set up from the command line (or environment variables, handy
-    /// in the Editor). By default the game hosts, and the ticket to join it is logged, shown in a toast and
-    /// copied to the clipboard. To join, pass <c>-link-join &lt;ticket&gt;</c> (<c>YARG_LINK_JOIN</c>).
-    /// <c>-link-name</c> (<c>YARG_LINK_NAME</c>) sets the name friends see.
+    /// Sessions are hosted and joined from the lobby (<see cref="LinkLobby"/>, "Online" in the main menu). The
+    /// host's invite code is copied to the clipboard; friends paste it to join. For development, launch options
+    /// (or environment variables, handy in the Editor) can do the same at startup: <c>-link-host</c>
+    /// (<c>YARG_LINK_HOST=1</c>) or <c>-link-join &lt;ticket&gt;</c> (<c>YARG_LINK_JOIN</c>).
+    /// <c>-link-name</c> (<c>YARG_LINK_NAME</c>) sets the name friends see; by default it's the first
+    /// player's profile name.
+    /// </para>
+    /// <para>
+    /// The host's fail meter is the band's: see <see cref="UpdateBandMeter"/>.
     /// </para>
     /// <para>
     /// The transport is <see cref="NativeLinkTransport"/> (iroh: hole punching, relays, encryption) unless
@@ -57,7 +63,7 @@ namespace YARG.Integration.Link
     /// (<c>YARG_LINK_LAN=1</c>) accepts connections from the local network.
     /// </para>
     /// </remarks>
-    public class LinkController : MonoBehaviour
+    public partial class LinkController : MonoBehaviour
     {
         public const int DEFAULT_PORT = 36120;
 
@@ -66,6 +72,9 @@ namespace YARG.Integration.Link
 
         /// <summary>A joiner tries to reach the host again this often.</summary>
         private const double REJOIN_INTERVAL = 5.0;
+
+        /// <summary>How often our status and players are checked for changes, for friends' lobbies.</summary>
+        private const double STATE_INTERVAL = 0.25;
 
         /// <summary>Send new inputs at most this often.</summary>
         private const double INPUTS_INTERVAL_MIN = 1.0 / 120.0;
@@ -76,9 +85,17 @@ namespace YARG.Integration.Link
         /// <summary>Bytes per input in the <c>inputs</c> message: time (double), action (int), value (int).</summary>
         private const int INPUT_SIZE = 16;
 
-        private const string KIND_SETUP  = "setup";
-        private const string KIND_INPUTS = "inputs";
-        private const string KIND_FAILED = "failed";
+        private const string KIND_SETUP    = "setup";
+        private const string KIND_INPUTS   = "inputs";
+        private const string KIND_FAILED   = "failed";
+        private const string KIND_DECLINED = "declined";
+
+        // Member statuses, as shown in the lobby (see LinkSession.SetLocalState)
+        public const string STATUS_BROWSING = "browsing";
+        public const string STATUS_CHOOSING = "choosing";
+        public const string STATUS_READY    = "ready";
+        public const string STATUS_PLAYING  = "playing";
+        public const string STATUS_RESULTS  = "results";
 
         public static LinkController Instance { get; private set; }
 
@@ -86,10 +103,16 @@ namespace YARG.Integration.Link
         private static double Now => Clock.Elapsed.TotalSeconds;
 
         private LinkSession _session;
-        private string      _joinTicket;
-        private double      _nextOpenTime;
-        private double      _nextJoinTime = double.PositiveInfinity;
-        private string      _lastProblem;
+
+        /// <summary>Joiner only: the host's invite code.</summary>
+        private string _joinTicket;
+        private double _nextJoinTime = double.PositiveInfinity;
+        private string _lastProblem;
+
+        /// <summary>Launch options (or environment variables) can open a session once, at startup.</summary>
+        private bool _launchOptionsUsed;
+
+        private double _nextStateTime;
 
         // Synced-start state, touched only on the main thread
         private bool    _waiting;
@@ -102,6 +125,7 @@ namespace YARG.Integration.Link
 
         // Song a friend asked us to load, while we're still in difficulty select
         private string _remoteRequestHash;
+        private string _remoteRequestName;
 
         // Friends' player setups, by member ID. Kept until we leave the song they were for.
         private readonly Dictionary<string, RemoteSetup> _remoteSetups = new();
@@ -111,13 +135,33 @@ namespace YARG.Integration.Link
 
         private GUIStyle _scoreboardStyle;
 
+        /// <summary>Whether Settings › Experimental › "Enable online link" is on.</summary>
+        public static bool IsEnabled => SettingsManager.Settings?.LinkEnable.Value ?? false;
+
         /// <summary>
         /// Whether gameplay should hold at the loading screen for a synced start.
         /// </summary>
         public bool ShouldHoldForStart => _session is { IsConnected: true } && _session.Members.Count > 0;
 
-        /// <summary>The current session, if the link is enabled.</summary>
+        /// <summary>The current session, if we're hosting or joining one.</summary>
         public LinkSession CurrentSession => _session;
+
+        /// <summary>
+        /// The code friends use to join: ours when hosting, the host's when joining. <c>null</c> without a session.
+        /// </summary>
+        public string InviteCode => _session == null ? null
+            : _session.Role == LinkRole.Host ? _session.LocalTicket : _joinTicket;
+
+        /// <summary>
+        /// The invite code of the last session we hosted, so the lobby doesn't offer to join it from the clipboard.
+        /// </summary>
+        public string LastHostedInviteCode { get; private set; }
+
+        /// <summary>Joiner only: not (or no longer) connected to the host, and trying.</summary>
+        public bool IsConnecting => _session is { Role: LinkRole.Join, IsConnected: false };
+
+        /// <summary>Joiner only: why the last attempt to reach the host failed, if it did.</summary>
+        public string ConnectProblem => IsConnecting ? _lastProblem : null;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Create()
@@ -132,33 +176,39 @@ namespace YARG.Integration.Link
         {
             if (GlobalVariables.Instance == null) return;
 
-            bool linkEnabled = SettingsManager.Settings?.LinkEnable.Value ?? false;
-            if (!linkEnabled)
+            if (!IsEnabled)
             {
                 if (_session != null) Close();
-                _nextOpenTime = 0;
+                LinkLobby.CloseIfOpen();
                 return;
             }
 
-            if (_session == null)
+            LinkLobby.Refresh();
+
+            if (_session == null && !_launchOptionsUsed)
             {
-                if (Now < _nextOpenTime) return;
-                Open();
-                if (_session == null) return;
+                _launchOptionsUsed = true;
+                OpenFromLaunchOptions();
             }
+
+            if (_session == null) return;
 
             if (_joinTicket != null && !_session.IsConnected && !_session.IsJoining && Now >= _nextJoinTime)
             {
                 _nextJoinTime = Now + REJOIN_INTERVAL;
-                Join();
+                ConnectToHost();
+                if (_session == null) return;
             }
 
             _session.SetLocalScene(SceneName(GlobalVariables.Instance.CurrentScene));
+            UpdateLocalState();
             _session.Update();
-            LogPathChanges();
+            if (_session == null) return;
 
+            LogPathChanges();
             CheckRemoteRequestAbandoned();
             CheckSongEnded();
+            UpdateBandMeter();
         }
 
         private void LateUpdate()
@@ -177,27 +227,99 @@ namespace YARG.Integration.Link
 
         #region Session
 
-        private void Open()
+        /// <summary>
+        /// Host a session. The invite code is copied to the clipboard.
+        /// </summary>
+        /// <returns>Whether a session is open.</returns>
+        public bool Host()
         {
-            // Without a working setup, don't retry every frame
-            _nextOpenTime = Now + REJOIN_INTERVAL;
+            Close();
+            if (!Open(LinkRole.Host, null)) return false;
 
+            LastHostedInviteCode = _session.LocalTicket;
+            CopyInviteCode();
+            ToastManager.ToastInformation("Hosting an online session. The invite code is on your clipboard.");
+            return true;
+        }
+
+        /// <summary>
+        /// Join the session with this invite code. Connecting carries on in the background, and is retried if
+        /// the connection drops.
+        /// </summary>
+        /// <returns>Whether the code was accepted (not whether we're connected yet).</returns>
+        public bool Join(string ticket)
+        {
+            ticket = ticket?.Trim();
+            if (string.IsNullOrEmpty(ticket))
+            {
+                ShowProblem("Couldn't join", "Paste the invite code your friend copied when they started hosting.");
+                return false;
+            }
+
+            Close();
+            if (!Open(LinkRole.Join, ticket)) return false;
+
+            _joinTicket = ticket;
+            ConnectToHost();
+            _nextJoinTime = Now + REJOIN_INTERVAL;
+            return _session != null;
+        }
+
+        /// <summary>Leave the session (and end it, for the host).</summary>
+        public void Leave()
+        {
+            if (_session == null) return;
+
+            bool host = _session.Role == LinkRole.Host;
+            Close();
+            ToastManager.ToastInformation(host ? "You ended the online session" : "You left the online session");
+        }
+
+        /// <summary>Host only: remove a friend from the session.</summary>
+        public void Kick(LinkMember member)
+        {
+            if (_session is not { Role: LinkRole.Host }) return;
+            _session.Kick(member);
+        }
+
+        public void CopyInviteCode()
+        {
+            if (InviteCode == null) return;
+            GUIUtility.systemCopyBuffer = InviteCode;
+        }
+
+        /// <summary>
+        /// Launch options for development (two instances without touching the lobby): <c>-link-join</c> joins,
+        /// <c>-link-host</c> hosts.
+        /// </summary>
+        private void OpenFromLaunchOptions()
+        {
             string join = CommandLineArgs.LinkJoin ?? Environment.GetEnvironmentVariable("YARG_LINK_JOIN");
+            bool host = CommandLineArgs.LinkHost || Environment.GetEnvironmentVariable("YARG_LINK_HOST") == "1";
+
+            if (!string.IsNullOrWhiteSpace(join))
+            {
+                Join(join);
+            }
+            else if (host)
+            {
+                Host();
+            }
+        }
+
+        private bool Open(LinkRole role, string join)
+        {
             int? port = CommandLineArgs.LinkPort;
             if (port == null && int.TryParse(Environment.GetEnvironmentVariable("YARG_LINK_PORT"), out int envPort))
             {
                 port = envPort;
             }
             bool lan = CommandLineArgs.LinkLan || Environment.GetEnvironmentVariable("YARG_LINK_LAN") == "1";
-            string name = CommandLineArgs.LinkName ?? Environment.GetEnvironmentVariable("YARG_LINK_NAME") ??
-                Environment.UserName;
-
-            var role = string.IsNullOrWhiteSpace(join) ? LinkRole.Host : LinkRole.Join;
 
             string kind = CommandLineArgs.LinkTransport ?? Environment.GetEnvironmentVariable("YARG_LINK_TRANSPORT");
             if (string.IsNullOrWhiteSpace(kind))
             {
-                kind = join != null && join.Trim().StartsWith(LoopbackLinkTransport.TICKET_PREFIX,
+                kind = join != null && join.StartsWith(LoopbackLinkTransport.TICKET_PREFIX,
                     StringComparison.OrdinalIgnoreCase) ? "loopback" : "native";
             }
 
@@ -208,10 +330,8 @@ namespace YARG.Integration.Link
                 if (transport == null && role == LinkRole.Join)
                 {
                     YargLogger.LogFormatError("Link: {0}", problem);
-                    ToastManager.ToastError("Online link isn't available on this platform yet");
-                    // Retrying won't help; toggling the setting tries again
-                    _nextOpenTime = double.PositiveInfinity;
-                    return;
+                    ShowProblem("Online play isn't available", "Online play isn't available on this platform yet.");
+                    return false;
                 }
                 if (transport == null)
                 {
@@ -234,16 +354,19 @@ namespace YARG.Integration.Link
                 catch (SocketException e2)
                 {
                     YargLogger.LogFormatError("Link: couldn't open a socket: {0}", e2.Message);
-                    return;
+                    ShowProblem("Couldn't start online play", $"Couldn't open a network connection: {e2.Message}");
+                    return false;
                 }
             }
             catch (SocketException e)
             {
                 YargLogger.LogFormatError("Link: couldn't open a socket: {0}", e.Message);
-                ToastManager.ToastError($"Online link: couldn't open port {port}");
-                return;
+                ShowProblem("Couldn't start online play", $"Couldn't open port {port}: {e.Message}");
+                return false;
             }
 
+            string name = CommandLineArgs.LinkName ?? Environment.GetEnvironmentVariable("YARG_LINK_NAME") ??
+                DefaultName();
             var options = new LinkSessionOptions
             {
                 GameVersion = GlobalVariables.Instance.CurrentVersion,
@@ -262,18 +385,30 @@ namespace YARG.Integration.Link
             _session.StartCancelled += OnStartCancelled;
             _session.GameDataReceived += HandleGameData;
             _session.Disconnected += OnDisconnected;
+            _session.PeerRefused += OnPeerRefused;
+
+            // Our state goes out with the hello's follow-ups, so friends see it straight away
+            _nextStateTime = 0;
+            UpdateLocalState();
 
             if (role == LinkRole.Host)
             {
                 YargLogger.LogInfo($"Link: hosting as {name}. Friends join with: -link-join {_session.LocalTicket}");
-                GUIUtility.systemCopyBuffer = _session.LocalTicket;
-                ToastManager.ToastInformation("Hosting an online session. The invite code is on your clipboard.");
             }
-            else
+            return true;
+        }
+
+        /// <summary>The name friends see: the first player's profile, or the computer's user.</summary>
+        private static string DefaultName()
+        {
+            foreach (var player in PlayerContainer.Players)
             {
-                _joinTicket = join.Trim();
-                _nextJoinTime = Now;
+                if (!player.Profile.IsBot && !string.IsNullOrWhiteSpace(player.Profile.Name))
+                {
+                    return player.Profile.Name;
+                }
             }
+            return Environment.UserName;
         }
 
         /// <summary>The iroh transport, or <c>null</c> (with why) if it can't be used here.</summary>
@@ -361,7 +496,7 @@ namespace YARG.Integration.Link
             return null;
         }
 
-        private void Join()
+        private void ConnectToHost()
         {
             try
             {
@@ -370,9 +505,103 @@ namespace YARG.Integration.Link
             catch (FormatException e)
             {
                 YargLogger.LogFormatError("Link: {0}", e.Message);
-                ToastManager.ToastError("Online link: that isn't a valid invite");
-                _joinTicket = null;
+                Close();
+                ShowProblem("Couldn't join", "That isn't a valid invite code. Ask your friend to copy it again.");
             }
+        }
+
+        /// <summary>
+        /// What we're doing and who's playing, for friends' lobbies. The session only sends changes.
+        /// </summary>
+        private void UpdateLocalState()
+        {
+            if (Now < _nextStateTime) return;
+            _nextStateTime = Now + STATE_INTERVAL;
+
+            var players = new List<PlayerInfo>();
+            foreach (var player in PlayerContainer.Players)
+            {
+                if (player.SittingOut) continue;
+
+                var profile = player.Profile;
+                players.Add(new PlayerInfo
+                {
+                    Name = profile.Name,
+                    Instrument = profile.CurrentInstrument.ToString(),
+                    Difficulty = profile.CurrentDifficulty.ToString(),
+                    Bot = profile.IsBot,
+                });
+            }
+
+            _session.SetLocalState(LocalStatus(), players);
+        }
+
+        private string LocalStatus()
+        {
+            switch (GlobalVariables.Instance.CurrentScene)
+            {
+                case SceneIndex.Gameplay:
+                    return _waiting && !_startAt.HasValue ? STATUS_READY : STATUS_PLAYING;
+                case SceneIndex.Score:
+                    return STATUS_RESULTS;
+                case SceneIndex.Menu:
+                    bool choosing = _remoteRequestHash != null ||
+                        MenuManager.Instance != null && MenuManager.Instance.CurrentMenu == MenuManager.Menu.DifficultySelect;
+                    return choosing ? STATUS_CHOOSING : STATUS_BROWSING;
+                default:
+                    return SceneName(GlobalVariables.Instance.CurrentScene);
+            }
+        }
+
+        /// <summary>A member's status for people, for example "Ready" or "Picking a part".</summary>
+        public static string DescribeStatus(string status) => status switch
+        {
+            STATUS_BROWSING => "Browsing",
+            STATUS_CHOOSING => "Picking a part",
+            STATUS_READY    => "Ready",
+            STATUS_PLAYING  => "Playing",
+            STATUS_RESULTS  => "Results",
+            null or ""      => "In the session",
+            _               => char.ToUpperInvariant(status[0]) + status.Substring(1),
+        };
+
+        /// <summary>
+        /// How we're connected to a member, for people: "Direct · 34 ms", "Relay · 120 ms", or for a joiner's
+        /// view of another joiner, "Through the host".
+        /// </summary>
+        public string DescribeConnection(LinkMember member)
+        {
+            if (_session == null || member == null) return "";
+
+            // Joiners only talk to the host, which passes everything on
+            if (_session.Role == LinkRole.Join && !member.IsHost)
+            {
+                return "Through the host";
+            }
+
+            var stats = _session.GetStats(member);
+            if (!stats.Connected) return "Connecting";
+
+            string path = stats.Path switch
+            {
+                LinkPath.Direct => "Direct",
+                LinkPath.Relay  => "Relay",
+                _               => "Connected",
+            };
+            return stats.Rtt is { } rtt ? $"{path} · {rtt.TotalMilliseconds:0} ms" : path;
+        }
+
+        /// <summary>
+        /// Whether a member's connection is good enough to play on: <c>false</c> when it's relayed with a high
+        /// round trip, so the lobby can highlight it.
+        /// </summary>
+        public bool IsConnectionPoor(LinkMember member)
+        {
+            if (_session == null || member == null) return false;
+            if (_session.Role == LinkRole.Join && !member.IsHost) return false;
+
+            var stats = _session.GetStats(member);
+            return stats.Connected && stats.Rtt is { } rtt && rtt.TotalMilliseconds > 150;
         }
 
         /// <summary>
@@ -403,19 +632,22 @@ namespace YARG.Integration.Link
             _session?.Dispose();
             _session = null;
             _joinTicket = null;
-            _nextOpenTime = 0;
             _nextJoinTime = double.PositiveInfinity;
             _lastProblem = null;
             _remoteRequestHash = null;
+            _remoteRequestName = null;
             _remoteSetups.Clear();
             _paths.Clear();
             _shared = null;
+            EndBandMeter();
         }
 
         private void OnMemberJoined(LinkMember member)
         {
             _lastProblem = null;
-            ToastManager.ToastInformation($"{member.Name} is in the online session");
+            ToastManager.ToastInformation(member.IsHost && _session.Role == LinkRole.Join
+                ? $"Joined {member.Name}'s online session"
+                : $"{member.Name} joined the online session");
         }
 
         private void OnMemberLeft(LinkMember member)
@@ -426,21 +658,80 @@ namespace YARG.Integration.Link
                 _remoteSetups.Remove(member.Id);
             }
 
-            if (_session is { IsConnected: true })
+            // A joiner who lost the host hears about that instead
+            if (_session is not { IsConnected: true }) return;
+
+            if (member.ConnectionLost)
+            {
+                ToastManager.ToastWarning($"Lost the connection to {member.Name}");
+            }
+            else
             {
                 ToastManager.ToastInformation($"{member.Name} left the online session");
             }
         }
 
-        private void OnDisconnected(string reason)
+        private void OnDisconnected(LinkDisconnect disconnect)
         {
+            if (!disconnect.CanRetry)
+            {
+                // Trying again won't help: tell the player and close the session
+                string title = disconnect.Code switch
+                {
+                    ByeCodes.INCOMPATIBLE => "Can't join: different versions",
+                    ByeCodes.KICKED       => "Removed from the session",
+                    _                     => "Couldn't join",
+                };
+                string message = disconnect.Code == ByeCodes.INCOMPATIBLE
+                    ? $"Everyone in an online session has to play the same version of YARG.\n\n{Sentence(disconnect.Reason)}"
+                    : Sentence(disconnect.Reason);
+
+                Close();
+                ShowProblem(title, message);
+                return;
+            }
+
             // A joiner keeps trying, but only says so when something changes
             _nextJoinTime = Now + REJOIN_INTERVAL;
-            if (reason != _lastProblem)
+            if (disconnect.Reason != _lastProblem)
             {
-                _lastProblem = reason;
-                ToastManager.ToastWarning($"Online session: {reason}");
+                _lastProblem = disconnect.Reason;
+                ToastManager.ToastWarning(disconnect.Code == ByeCodes.LEFT
+                    ? "The host ended the online session. Trying to reconnect..."
+                    : $"Lost the online session ({disconnect.Reason}). Trying to reconnect...");
             }
+        }
+
+        private void OnPeerRefused(string reason, string code)
+        {
+            ToastManager.ToastWarning($"Someone couldn't join the online session: {reason}");
+        }
+
+        /// <summary>
+        /// Tell the player about a problem that needs their attention: a dialog in the menu, or a toast elsewhere
+        /// (or when another dialog is open).
+        /// </summary>
+        private static void ShowProblem(string title, string message)
+        {
+            var dialogs = DialogManager.Instance;
+            if (GlobalVariables.Instance.CurrentScene == SceneIndex.Menu && dialogs != null)
+            {
+                LinkLobby.CloseIfOpen();
+                if (!dialogs.IsDialogShowing)
+                {
+                    dialogs.ShowMessage(title, message);
+                    return;
+                }
+            }
+
+            ToastManager.ToastError($"{title}. {message}");
+        }
+
+        private static string Sentence(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            text = char.ToUpperInvariant(text[0]) + text.Substring(1);
+            return text.EndsWith(".") ? text : text + ".";
         }
 
         private static string SceneName(SceneIndex scene) => scene switch
@@ -520,6 +811,7 @@ namespace YARG.Integration.Link
                 if (_startAt.HasValue)
                 {
                     _shared = shared;
+                    StartBandMeter(gameManager);
                     return StartResult.Synced;
                 }
 
@@ -568,6 +860,9 @@ namespace YARG.Integration.Link
 
                 foreach (var feed in setup.Feeds)
                 {
+                    // The host's fail meter is the band's, so friends' players count toward it there
+                    feed.InHostBand = _session?.Role == LinkRole.Host;
+
                     if (feed.Mirrored)
                     {
                         var frame = setup.Data.Frames[setup.FrameIndices[feed.Index]];
@@ -613,7 +908,7 @@ namespace YARG.Integration.Link
 
             if (GlobalVariables.Instance.CurrentScene != SceneIndex.Menu || MenuManager.Instance == null)
             {
-                _session.ReportDecline(hash, "busy");
+                Decline(hash, name, DECLINE_BUSY);
                 return;
             }
 
@@ -621,8 +916,9 @@ namespace YARG.Integration.Link
                 !SongContainer.SongsByHash.TryGetValue(HashWrapper.FromString(hash), out var entries) ||
                 entries.Count == 0)
             {
-                ToastManager.ToastWarning($"Your friend picked \"{name}\", which isn't in your library");
-                _session.ReportDecline(hash, "song not in library");
+                ToastManager.ToastWarning($"Your friend picked \"{name}\", which isn't in your library. " +
+                    "They'll play it without you.");
+                Decline(hash, name, DECLINE_MISSING);
                 return;
             }
 
@@ -640,6 +936,37 @@ namespace YARG.Integration.Link
             MenuManager.Instance.PushMenu(MenuManager.Menu.DifficultySelect);
 
             _remoteRequestHash = hash;
+            _remoteRequestName = entry.Name.Original;
+        }
+
+        private const string DECLINE_MISSING = "missing";
+        private const string DECLINE_BUSY    = "busy";
+        private const string DECLINE_BACKED  = "backed out";
+
+        /// <summary>
+        /// Turn down a friend's song: the host's coordinator stops waiting for us, and everyone hears why.
+        /// </summary>
+        private void Decline(string hash, string name, string reason)
+        {
+            _session.ReportDecline(hash, reason);
+            _session.Broadcast(KIND_DECLINED, new JObject
+            {
+                ["song"] = hash,
+                ["name"] = name,
+                ["reason"] = reason,
+            });
+        }
+
+        private void OnFriendDeclined(LinkMember member, JObject data)
+        {
+            string name = (string) data["name"] ?? "the song";
+            string message = (string) data["reason"] switch
+            {
+                DECLINE_MISSING => $"{member.Name} doesn't have \"{name}\", so they'll sit this one out",
+                DECLINE_BACKED  => $"{member.Name} backed out of \"{name}\"",
+                _               => $"{member.Name} can't play \"{name}\" right now",
+            };
+            ToastManager.ToastWarning(message);
         }
 
         /// <summary>
@@ -658,7 +985,7 @@ namespace YARG.Integration.Link
 
             if (MenuManager.Instance != null && MenuManager.Instance.CurrentMenu != MenuManager.Menu.DifficultySelect)
             {
-                _session.ReportDecline(_remoteRequestHash, "backed out");
+                Decline(_remoteRequestHash, _remoteRequestName, DECLINE_BACKED);
                 _remoteRequestHash = null;
             }
         }
@@ -686,6 +1013,16 @@ namespace YARG.Integration.Link
 
                     case KIND_FAILED:
                         OnFriendFailed(member, data);
+                        break;
+
+                    case KIND_DECLINED:
+                        OnFriendDeclined(member, data);
+                        break;
+
+                    case KIND_PLAYER_FAILED:
+                    case KIND_REVIVED:
+                    case KIND_METER:
+                        OnBandMeterData(member, kind, data);
                         break;
                 }
             }
@@ -730,6 +1067,7 @@ namespace YARG.Integration.Link
             if (_shared == null) return;
 
             _shared = null;
+            EndBandMeter();
 
             // Setups that were used are done with; ones still waiting for us to join are kept
             var used = new List<string>();
@@ -1019,13 +1357,13 @@ namespace YARG.Integration.Link
             var gm = _shared.GameManager;
             if (gm == null || !gm.IsSongStarted) return;
 
-            var rows = new List<(string Name, string Detail, int Score, bool Local, bool Stalled)>();
+            var rows = new List<(string Name, string Detail, int Score, bool Local, bool Stalled, string Connection)>();
             foreach (var player in _shared.Players)
             {
                 if (player == null) continue;
                 rows.Add((player.Player.Profile.Name,
                     Detail(player.Stars, player.Combo, player.NotesHit, player.BaseStats.TotalNotes),
-                    player.Score, true, false));
+                    player.Score, true, false, null));
             }
 
             bool anyRemote = false;
@@ -1036,8 +1374,10 @@ namespace YARG.Integration.Link
                 {
                     anyRemote = true;
                     bool stalled = !gm.Paused && Now - feed.LastReceived > RemoteInputFeed.STALL_SECONDS;
+                    var member = FindMember(feed.Member);
+                    string connection = member == null ? null : DescribeConnection(member);
                     rows.Add((feed.Name, Detail(feed.Stars, feed.Combo, feed.NotesHit, feed.TotalNotes),
-                        feed.Score, false, stalled));
+                        feed.Score, false, stalled, connection));
                 }
             }
 
@@ -1058,7 +1398,8 @@ namespace YARG.Integration.Link
                 string name = row.Local ? $"<b>{Escape(row.Name)}</b>" : Escape(row.Name);
                 string status = row.Stalled ? " <color=#ff8080>(connection lost)</color>" : "";
                 text.AppendLine($"{name}  <b>{row.Score:N0}</b>{status}");
-                text.AppendLine($"<size={Mathf.RoundToInt(16 * scale)}><color=#c0c0c0>{row.Detail}</color></size>");
+                string connection = string.IsNullOrEmpty(row.Connection) ? "" : $"  <color=#909090>{row.Connection}</color>";
+                text.AppendLine($"<size={Mathf.RoundToInt(16 * scale)}><color=#c0c0c0>{row.Detail}</color>{connection}</size>");
             }
 
             var content = new GUIContent(text.ToString().TrimEnd());
@@ -1071,6 +1412,16 @@ namespace YARG.Integration.Link
             GUI.DrawTexture(box, Texture2D.whiteTexture);
             GUI.color = oldColor;
             GUI.Label(new Rect(box.x + pad, box.y + pad, size.x, size.y), content, _scoreboardStyle);
+        }
+
+        private LinkMember FindMember(string id)
+        {
+            if (_session == null) return null;
+            foreach (var member in _session.Members)
+            {
+                if (member.Id == id) return member;
+            }
+            return null;
         }
 
         private static string Detail(float stars, int combo, int notesHit, int totalNotes)

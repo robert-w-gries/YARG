@@ -36,14 +36,16 @@ We aren't maintainers, so the MVP has to be easy to review and easy to say yes t
 
 Both are tradeoffs against polish, and the MVP write-up should say so.
 
-### Where the work stands (2026-11-14, compared with `dev`)
+### Where the work stands (2026-11-15, compared with `dev`)
 
 - **YARG.Core: no changes.** The pin is the same as on `dev`.
-- **Online code is separate:** about 3,800 lines of C# in `Integration/Link`, plus the Rust library and
+- **Online code is separate:** about 4,900 lines of C# in `Integration/Link`, plus the Rust library and
   tests. Behind an Experimental setting (`LinkEnable`), off by default.
-- **Existing code: 17 files, +346 / −56 lines.** Most are `IsRemote` checks (no sounds, input
-  viewer, stem muting or rewinds for friends' tracks), plus a small `MenuManager.CurrentMenu` getter and
-  the settings, launch options and text for the link. The ones reviewers will look at most closely:
+- **Existing code: 20 files, +675 / −66 lines**, of which 247 are the "Online" main menu entry in
+  `MainMenu.prefab` (a `MenuEntry` instance, hidden while the setting is off). Most of the rest are
+  `IsRemote` checks (no sounds, input viewer, stem muting or rewinds for friends' tracks), plus a small
+  `MenuManager.CurrentMenu` getter and the settings, launch options and text for the link. The ones
+  reviewers will look at most closely:
   - **Each player has its own clock.** `BasePlayer.TimeLag` and `PlayerVisualTime` let a friend's track run
     behind the song. Track elements now read the player's time instead of `GameManager.VisualTime`. For local
     players the lag is always 0, so nothing changes for them, but "every track shares one clock" no longer
@@ -54,13 +56,16 @@ Both are tradeoffs against polish, and the MVP write-up should say so.
   - **Synced start.** An `await` in `GameManager.Loading` holds on the loading screen until the start is
     scheduled, then adds friends' tracks.
   - **Fail sync.** The fail routine is shared by a local fail and a fail from the link.
+  - **Band fail meter.** On the host, friends' engines join the main `EngineManager`. On a client, the main
+    `EngineManager` runs with fail off, and `FailMeter` reads `GameManager.BandHappiness` (the host's value
+    on a client) instead of `EngineManager.Happiness`. `TrackPlayer.FailFromLink` and
+    `GameManager.ReviveFromLink` apply the host's decisions.
 - **The biggest ask isn't in the game code: Rust in the native build** (open question 2). It adds a language
   and toolchain to the build, even though it doesn't change YARG's architecture.
-- **The remaining fail meter work fits the goals.** The host meter can use `EngineManager` as it is, by
-  accepting the star power score drift. Reviving (`EngineManager.RevivePlayer`) and marking a player failed
-  (`EngineContainer.PlayerHasFailed`) are public in Core. Showing the host's meter value on a client will
-  need a change in YARG's `FailMeter` (it reads `EngineManager.Happiness`, which is computed and has no
-  setter), not in Core.
+- **The fail meter fits the goals.** The host meter uses `EngineManager` as it is, accepting the star
+  power score drift. Reviving (`EngineManager.RevivePlayer`) and marking a player failed
+  (`EngineContainer.PlayerHasFailed`) are public in Core. Showing the host's meter value on a client took a
+  small change in YARG's `FailMeter`, not in Core.
 
 ## Why not keep the sidecar
 
@@ -329,13 +334,56 @@ Phase 3 notes (2026-11-15):
 
 ### Phase 4: MVP polish (demo-ready)
 
-- [ ] Minimal lobby: host/join by ticket, member list with instrument, difficulty and ready state, leave/kick.
-- [ ] Copy/paste invite code in the UI (works without Discord).
-- [ ] Clear error states: incompatible version, song missing, peer lost.
-- [ ] Connection quality indicator (direct/relay, RTT).
-- [ ] Host-authoritative band fail meter (see [Band fail meter](#band-fail-meter)).
+- [x] Minimal lobby: host/join by ticket, member list with instrument, difficulty and ready state, leave/kick.
+- [x] Copy/paste invite code in the UI (works without Discord).
+- [x] Clear error states: incompatible version, song missing, peer lost.
+- [x] Connection quality indicator (direct/relay, RTT).
+- [x] Host-authoritative band fail meter (see [Band fail meter](#band-fail-meter)). Not yet tested in a real
+  song; see the notes.
 - [ ] Recorded demo plus a short write-up for maintainers. The write-up must list the
   [known limitations](#known-limitations-call-out-in-the-mvp-write-up).
+
+Phase 4 notes (2026-11-15):
+
+- **Lobby** (`LinkLobby.cs`): "Online" in the main menu, shown only while the Experimental setting is on.
+  It's built from the existing dialogs (`ListDialog`, `RenameDialog`, `MessageDialog`), so it needs no new
+  prefabs. Without a session it offers "Host a session", "Join with an invite code..." (paste into a
+  text field), and "Join with the copied invite code" when the clipboard holds something that looks like
+  one. In a session it lists every member: name, host tag, status, each player's instrument and difficulty
+  (bots marked), and the connection. The host clicks a friend to remove them, after a confirmation.
+  Buttons: Copy Invite Code, Leave Session (End Session for the host), Close. It refreshes twice a second
+  and only rebuilds when something changed.
+- **No "start" button.** As before, anyone picks a song and everyone in the menu is asked to pick their
+  part. The lobby's "ready state" is the member's status: Browsing, Picking a part, Ready (loaded and
+  waiting on the loading screen), Playing, Results.
+- **Session layer:** a new `state` message (joiner → host, relayed in the roster) carries each member's
+  status and players. `ByeMessage` gained a `code` (`left`, `incompatible`, `kicked`, `refused`), so a
+  joiner knows whether retrying can help. `LinkSession.Kick`, a host-side `PeerRefused` event, and
+  `LinkMember.ConnectionLost` / `LeftReason` (the host can tell "left" from "lost"). The additions are
+  optional fields and a new message type, so `LinkProtocol.VERSION` stays 1. Version mismatch reasons
+  no longer say "theirs/ours", because both sides show the same text.
+- **Sessions start from the lobby.** Turning the setting on no longer hosts automatically.
+  `-link-host` (`YARG_LINK_HOST=1`) is new, for development; `-link-join` still works. The default name
+  is now the first non-bot profile's name instead of the computer's user name.
+- **Error states:** a different version, being removed, and an invalid invite code each show a dialog in
+  the menu (a toast elsewhere) and close the session. A lost connection keeps retrying, and the lobby
+  says "Can't reach the host (reason). Trying again...". Hosts get a toast when someone with another
+  version tried to join. A friend without the song tells everyone: "Robin doesn't have 'Song', so
+  they'll sit this one out." Backing out of a friend's song says so too. Members leaving and lost
+  connections get different toasts.
+- **Connection quality:** "Direct · 34 ms" / "Relay · 120 ms" in the lobby (orange above 150 ms) and next
+  to each friend in the in-game scoreboard. Joiners only connect to the host, so other joiners show
+  "Through the host".
+- **Band fail meter** (`LinkController.BandMeter.cs`): see [Band fail meter](#band-fail-meter).
+- **Tested:** 3 new session tests, run on both transports (state through the roster, kick, left vs
+  lost), and refusal codes checked in the existing ones. All of `Tests/YARG.Link.Tests` passes. Unity 6000.3.5f2 compiles with no errors. In a
+  batch-mode Editor (via the `unity` CLI and Pipeline `script run`) the real game drove the lobby
+  against in-process loopback sessions: hosting, a friend joining with parts shown, Ready status, the
+  missing-song toast, removing through the confirmation dialog, ending the session, joining by pasting
+  a code, leaving, the different-versions dialog, an unreachable host, and an invalid code.
+- **Not yet tested:** the band fail meter in a real song (the Editor had no songs or profiles), the
+  lobby's look (batch mode can't capture overlay UI), and controller navigation of the lobby list. All
+  three need the Windows ↔ macOS ↔ Linux test from phase 3.
 
 ### Phase 5: after MVP
 
@@ -363,9 +411,12 @@ truth for the meter:
   implemented), a player failed or the band was revived (to lower or restore that player's highway),
   and the meter value (so the client's meter shows the band's).
 
-Current state (2026-11-14): only the `failed` message exists. Any game whose own meter runs out sends
-it, and friends fail with it. Each game's meter only counts its own players for now, so a weak player
-on one machine can fail the band while the other machine's meter is fine.
+Current state (2026-11-15): implemented as above. The host's `EngineManager` events drive
+`player_failed` (sent once per failed player until a revive) and `revived`. The meter value goes out about
+ten times a second as an unreliable `meter` message. On a client, a failed player's highway goes down
+(`TrackPlayer.FailFromLink`), and every engine waits for a revive (`EngineContainer.PlayerHasFailed`), so
+the next star power activation saves the band, as in local multiplayer. Only the host's meter can fail
+the song, and the host's no fail setting is the one that counts.
 
 ## Known limitations (call out in the MVP write-up)
 
@@ -378,6 +429,13 @@ on one machine can fail the band while the other machine's meter is fine.
 - **The fail menu only affects the local game.** "Restart" and "continue with no fail" aren't synced.
 - **Pause isn't synced.** If a friend pauses, their highway freezes on everyone else's screen until
   they resume.
+- **Revives near the fail moment can disagree by a fraction of a second.** Mirrors run about 150 ms behind
+  their owner, so star power used right around a fail or revive can count as a revive on one game and as
+  plain star power on another. Fails, saves and scores stay with the host and each player's own game;
+  only a mirrored highway's star power display can be briefly wrong.
+- **Vocals and pro guitar players aren't in the host's meter**, because they can't be mirrored yet.
+- **If the host drops mid-song, clients' meters stop updating** and the song can no longer fail for them.
+- **The crowd and venue follow each game's own meter**, not the band's, on clients.
 
 ## Open questions
 

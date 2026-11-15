@@ -34,7 +34,7 @@ namespace YARG.Link.Tests
             public readonly List<SongInfo> LoadRequests = new();
             public readonly List<double> Starts = new();
             public readonly List<string> Cancels = new();
-            public readonly List<string> Disconnects = new();
+            public readonly List<LinkDisconnect> Disconnects = new();
             public readonly List<(string From, string Kind, JObject Data)> Data = new();
 
             public Member(ILinkTransport transport, LinkRole role, string name, string game = "test")
@@ -213,10 +213,15 @@ namespace YARG.Link.Tests
         {
             var host = Add(LinkRole.Host, "Host", game: "v1");
             var a = Add(LinkRole.Join, "A", game: "v2");
+            var refused = new List<string>();
+            host.Session.PeerRefused += (_, code) => refused.Add(code);
             a.Session.Join(host.Session.LocalTicket);
 
-            PumpUntil(() => a.Disconnects.Count == 1);
-            Assert.That(a.Disconnects[0], Does.Contain("different game versions"));
+            PumpUntil(() => a.Disconnects.Count == 1 && refused.Count == 1);
+            Assert.That(refused[0], Is.EqualTo(ByeCodes.INCOMPATIBLE));
+            Assert.That(a.Disconnects[0].Reason, Does.Contain("different game versions"));
+            Assert.That(a.Disconnects[0].Code, Is.EqualTo(ByeCodes.INCOMPATIBLE));
+            Assert.That(a.Disconnects[0].CanRetry, Is.False);
             Assert.That(a.Session.IsConnected, Is.False);
             Assert.That(host.Session.Members, Is.Empty);
         }
@@ -232,7 +237,8 @@ namespace YARG.Link.Tests
 
             b.Session.Join(a.Session.LocalTicket);
             PumpUntil(() => b.Disconnects.Count == 1);
-            Assert.That(b.Disconnects[0], Does.Contain("isn't hosting"));
+            Assert.That(b.Disconnects[0].Reason, Does.Contain("isn't hosting"));
+            Assert.That(b.Disconnects[0].Code, Is.EqualTo(ByeCodes.REFUSED));
             Assert.That(a.Session.IsConnected, Is.True);
         }
 
@@ -244,9 +250,63 @@ namespace YARG.Link.Tests
             _all.Remove(host);
 
             PumpUntil(() => a.Disconnects.Count == 1 && b.Disconnects.Count == 1);
-            Assert.That(a.Disconnects[0], Is.EqualTo("left the session"));
+            Assert.That(a.Disconnects[0].Reason, Is.EqualTo("left the session"));
+            Assert.That(a.Disconnects[0].Code, Is.EqualTo(ByeCodes.LEFT));
             Assert.That(a.Session.Members, Is.Empty);
             Assert.That(a.Session.IsConnected, Is.False);
+        }
+
+        [Test]
+        public void StateReachesEveryoneThroughTheRoster()
+        {
+            var (host, a, b) = ThreeMembers();
+            var guitar = new PlayerInfo { Name = "Ann", Instrument = "FiveFretGuitar", Difficulty = "Expert" };
+            var drums = new PlayerInfo { Name = "Bot", Instrument = "FourLaneDrums", Difficulty = "Hard", Bot = true };
+
+            a.Session.SetLocalState("browsing", new[] { guitar, drums });
+            host.Session.SetLocalState("ready", new[] { guitar });
+
+            PumpUntil(() => b.Session.Members.Single(m => m.Name == "A").Players.Count == 2 &&
+                b.Session.Members.Single(m => m.Name == "Host").Status == "ready");
+
+            var seen = b.Session.Members.Single(m => m.Name == "A");
+            Assert.That(seen.Status, Is.EqualTo("browsing"));
+            Assert.That(seen.Players, Is.EqualTo(new[] { guitar, drums }));
+            Assert.That(host.Session.Members.Single(m => m.Name == "A").Players, Is.EqualTo(new[] { guitar, drums }));
+            Assert.That(a.Session.Members.Single(m => m.Name == "Host").Players, Is.EqualTo(new[] { guitar }));
+
+            // A state set before joining is sent once the host accepts us
+            var c = Add(LinkRole.Join, "C");
+            c.Session.SetLocalState("browsing", new[] { drums });
+            c.Session.Join(host.Session.LocalTicket);
+            PumpUntil(() => a.Session.Members.Any(m => m.Name == "C" && m.Players.Count == 1));
+        }
+
+        [Test]
+        public void HostCanRemoveAMember()
+        {
+            var (host, a, b) = ThreeMembers();
+            host.Session.Kick(host.Session.Members.Single(m => m.Name == "A"));
+
+            PumpUntil(() => a.Disconnects.Count == 1 && host.HasMembers("B") && b.HasMembers("Host"));
+            Assert.That(a.Disconnects[0].Code, Is.EqualTo(ByeCodes.KICKED));
+            Assert.That(a.Disconnects[0].CanRetry, Is.False);
+            Assert.That(a.Session.IsConnected, Is.False);
+            Assert.Throws<InvalidOperationException>(() => b.Session.Kick(b.Session.Members.First()));
+        }
+
+        [Test]
+        public void HostTellsLeavingFromLosingTheConnection()
+        {
+            var (host, a, b) = ThreeMembers();
+            var left = new List<LinkMember>();
+            host.Session.MemberLeft += left.Add;
+
+            a.Dispose();
+            _all.Remove(a);
+            PumpUntil(() => left.Count == 1);
+            Assert.That(left[0].ConnectionLost, Is.False);
+            Assert.That(left[0].LeftReason, Is.EqualTo("left the session"));
         }
     }
 }

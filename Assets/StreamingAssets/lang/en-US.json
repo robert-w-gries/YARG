@@ -343,6 +343,12 @@
             "UnknownTier": "Unknown tier",
             "BonusTier": "Bonus: {0}"
         },
+        "Link": {
+            "CopyInvite": "Copy Invite Code",
+            "Leave": "Leave Session",
+            "EndSession": "End Session",
+            "Remove": "Remove"
+        },
         "Main": {
             "MessageOfTheDay": "<align=center><size=32><b>Welcome to v0.15!</b></size></align>\n\nv0.15 is a major update that adds many highly requested and necessary gameplay features such as roll/trill lanes and Big \"YARG\" endings, as well as revamped user interface in the song selection and results screen, drum lane customization, automatic genre categorization, experimental custom vocalist characters in venues, and more.\n\n<b>If you have any feedback or find any bugs, please let us know on Discord or GitHub.</b>\n\nHappy YARGin'!",
             "Options": {
@@ -352,6 +358,7 @@
                 "Content": "Content",
                 "Settings": "Settings",
                 "Credits": "Credits",
+                "Online": "Online",
                 "Exit": "Exit"
             },
             "GoToCurrentlyPlaying": "Go To Currently Playing"
@@ -1943,7 +1950,7 @@
             },
             "LinkEnable": {
                 "Name": "Enable online link",
-                "Description": "Plays songs together with friends over the network, showing their highways and scores. While a friend is connected, songs wait on the loading screen until everyone is ready. For now, hosting and joining are set up with launch options (-link-join, -link-port)."
+                "Description": "Plays songs together with friends over the internet, showing their highways and scores. Adds \"Online\" to the main menu, where you host a session or join one with a friend's invite code. While friends are in the session, songs wait on the loading screen until everyone is ready."
             },
             "RB3EEnabled": {
                 "Name": "Enable RB3E Stage Kit data stream",

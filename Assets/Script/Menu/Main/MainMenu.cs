@@ -1,6 +1,7 @@
 using TMPro;
 using UnityEngine;
 using YARG.Core.Input;
+using YARG.Integration.Link;
 using YARG.Menu.MusicLibrary;
 using YARG.Menu.Navigation;
 using YARG.Menu.Persistent;
@@ -15,6 +16,10 @@ namespace YARG.Menu.Main
 
         [SerializeField]
         private TextMeshProUGUI _versionText;
+
+        /// <summary>"Online", shown while online play (an experimental setting) is enabled.</summary>
+        [SerializeField]
+        private GameObject _onlineEntry;
 
         private void Start()
         {
@@ -43,6 +48,11 @@ namespace YARG.Menu.Main
 
         private void OnEnable()
         {
+            if (_onlineEntry != null)
+            {
+                _onlineEntry.SetActive(LinkController.IsEnabled);
+            }
+
             // Set navigation scheme
             _ = Navigator.Instance.PushScheme(new NavigationScheme(new()
             {
@@ -76,6 +86,11 @@ namespace YARG.Menu.Main
         public void GameModes()
         {
             MenuManager.Instance.PushMenu(MenuManager.Menu.GameModes);
+        }
+
+        public void Online()
+        {
+            LinkLobby.Show();
         }
 
         public void Profiles()
