@@ -10,7 +10,8 @@ namespace YARG.Link.Tests
     /// <summary>
     /// Finds the YargLink library for tests: <c>YARG_LINK_LIBRARY</c> if set, else the newest build in
     /// <c>Native/YargLink/target</c> (run <c>cargo build</c> there first). Tests that need it are
-    /// skipped when there's none.
+    /// skipped when there's none, unless <c>YARG_LINK_REQUIRE_NATIVE=1</c> (set by NativeBuild, so a
+    /// plugin check can't pass by skipping).
     /// </summary>
     internal static class NativeLibrary
     {
@@ -22,7 +23,12 @@ namespace YARG.Link.Tests
         {
             if (Path == null)
             {
-                Assert.Ignore("YargLink isn't built; run `cargo build` in Native/YargLink");
+                const string message = "YargLink isn't built; run `cargo build` in Native/YargLink";
+                if (Environment.GetEnvironmentVariable("YARG_LINK_REQUIRE_NATIVE") == "1")
+                {
+                    Assert.Fail(message);
+                }
+                Assert.Ignore(message);
             }
 
             // Localhost only: no relays and no DNS, so tests run offline
