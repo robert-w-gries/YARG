@@ -16,17 +16,8 @@ internal sealed record NativePlugin(
     string BinaryName,
     string PluginDirectory,
     string BuiltDirectory,
-    string ArtifactName)
+    string ArtifactName) : IUnityPlugin
 {
-    public string PluginBinaryPath(RepositoryLayout repository) =>
-        Path.Combine(repository.Root, PluginDirectory, BinaryName);
-
-    public string PluginMetadataPath(RepositoryLayout repository) =>
-        PluginBinaryPath(repository) + ".meta";
-
-    public string MetadataSourcePath(RepositoryLayout repository) =>
-        PluginMetadataPath(repository);
-
     public string BuiltBinaryPath(
         RepositoryLayout repository, string configuration) =>
         Path.Combine(
@@ -74,16 +65,7 @@ internal static class NativePlugins
 
     public static NativePlugin ForCurrentHost()
     {
-        NativePlatform platform =
-            OperatingSystem.IsWindows()
-                ? NativePlatform.Windows
-                : OperatingSystem.IsLinux()
-                    ? NativePlatform.Linux
-                    : OperatingSystem.IsMacOS()
-                        ? NativePlatform.MacOS
-                        : throw new ToolException(
-                            "Unsupported host. NativeBuild supports Windows, Linux, and macOS.");
-
+        NativePlatform platform = NativeLibraries.CurrentHost();
         return All.Single(plugin => plugin.Platform == platform);
     }
 }
@@ -228,9 +210,9 @@ internal static class BuildCommand
         await ProcessRunner.RunAsync("dotnet", arguments, repository.NativeDirectory);
     }
 
-    private static void CopyPlugin(
+    internal static void CopyPlugin(
         RepositoryLayout repository,
-        NativePlugin plugin,
+        IUnityPlugin plugin,
         string builtBinary,
         string destinationDirectory)
     {
@@ -260,7 +242,7 @@ internal static class BuildCommand
             Path.GetFullPath(first), Path.GetFullPath(second), comparison);
     }
 
-    private static void RequireFile(string path, string description)
+    internal static void RequireFile(string path, string description)
     {
         if (!File.Exists(path))
         {
@@ -268,7 +250,7 @@ internal static class BuildCommand
         }
     }
 
-    private static bool FilesEqual(string first, string second)
+    internal static bool FilesEqual(string first, string second)
     {
         var firstInfo = new FileInfo(first);
         var secondInfo = new FileInfo(second);

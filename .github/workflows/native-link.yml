@@ -1,0 +1,152 @@
+name: Native link
+
+# Builds Native/YargLink (Rust) for every platform, tests it, and checks that the committed
+# plugins in Assets/Plugins/YargLink match. Mirrors native-audio.yml. The artifacts are uploaded
+# before the committed-plugin check, so `NativeBuild package --library link` works while the
+# committed plugins are stale.
+
+on:
+  pull_request:
+    paths:
+      - "Native/YargLink/**"
+      - "Assets/Plugins/YargLink/**"
+      - "Assets/Script/Integration/Link/Transport/**"
+      - "Assets/Script/Integration/Link/Session/**"
+      - "Tests/YARG.Link.Tests/**"
+      - "scripts/NativeBuild/**"
+      - ".github/workflows/native-link.yml"
+  push:
+    branches: [dev]
+    paths:
+      - "Native/YargLink/**"
+      - "Assets/Plugins/YargLink/**"
+      - "Assets/Script/Integration/Link/Transport/**"
+      - "Assets/Script/Integration/Link/Session/**"
+      - "Tests/YARG.Link.Tests/**"
+      - "scripts/NativeBuild/**"
+      - ".github/workflows/native-link.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-dotnet@v4
+        with:
+          # NativeBuild targets 8 and rolls forward; the link tests target 10
+          dotnet-version: 10.x
+      # rustup is on the runner image; rust-toolchain.toml selects (and installs) the pinned version
+      - name: Build, test, and package plugin
+        run: >
+          dotnet run --project scripts/NativeBuild --
+          build --library link --output "$env:RUNNER_TEMP/yarg-link-package" --verify-committed-plugin
+      - name: Verify exports and that the CRT is static
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $dll = "Native/YargLink/target/x86_64-pc-windows-msvc/release/yarg_link.dll"
+          $exports = & $dumpbin /nologo /exports $dll | Out-String
+          foreach ($name in "yl_abi_version", "yl_create", "yl_destroy", "yl_poll", "yl_send") {
+            if ($exports -notmatch "\b$name\b") { throw "missing export $name" }
+          }
+          $dependents = & $dumpbin /nologo /dependents $dll | Out-String
+          Write-Output $dependents
+          # A dynamic CRT would need the VC++ redistributable on players' machines
+          if ($dependents -match "(?i)vcruntime|msvcp|api-ms-win-crt") { throw "links the dynamic CRT" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: yarg-link-windows-x64
+          path: ${{ runner.temp }}/yarg-link-package
+          if-no-files-found: error
+
+  linux:
+    name: Linux x64
+    # Ubuntu 20.04 container for a glibc 2.31 floor, as in native-audio.yml. NativeBuild builds
+    # directly when it runs in this image, and in a docker container of it everywhere else, so
+    # local and CI builds match byte for byte.
+    runs-on: ubuntu-22.04
+    container: ubuntu:20.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install toolchain (gcc, rustup)
+        timeout-minutes: 10
+        run: |
+          apt-get update
+          # The same packages NativeBuild installs in its container, plus what the job needs
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates gcc libc6-dev git libicu66 file binutils
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.x
+      - name: Build, test, and package plugin
+        run: >
+          dotnet run --project scripts/NativeBuild --
+          build --library link --output "$RUNNER_TEMP/yarg-link-package" --verify-committed-plugin
+      - name: Verify architecture
+        run: file Native/YargLink/target/x86_64-unknown-linux-gnu/release/libyarg_link.so | grep 'ELF 64-bit.*x86-64'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: yarg-link-linux-x64
+          path: ${{ runner.temp }}/yarg-link-package
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal
+    # macos-26 and Xcode 26.0.1 for the same reasons as native-audio.yml: dyld on macOS 26
+    # SIGKILLs some ad-hoc signatures and requires LC_UUID, and a pinned linker keeps the
+    # byte-identical check meaningful. NativeBuild never runs codesign; the linker signs.
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Pin Xcode 26.0.1
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.0.1.app
+          xcode-select -p
+          clang --version | head -1
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.x
+      # NativeBuild also runs the C harness for both slices, the x86_64 one under Rosetta
+      - name: Build, test, and package plugin
+        run: >
+          dotnet run --project scripts/NativeBuild --
+          build --library link --output "$RUNNER_TEMP/yarg-link-package" --verify-committed-plugin
+      - name: Verify load commands and signatures
+        run: |
+          dylib=Native/YargLink/target/universal-apple-darwin/release/libyarg_link.dylib
+          # dyld4 refuses dylibs without LC_UUID, one per slice
+          otool -l "$dylib" | grep -c 'cmd LC_UUID' | grep -q '^2$'
+          otool -l "$dylib" | grep -A3 LC_BUILD_VERSION | grep minos
+          # The arm64 slice must carry the linker's ad-hoc signature (flags 0x20002,
+          # "linker-signed"), not one made by codesign
+          codesign -dv --verbose=4 --arch arm64 "$dylib" 2>&1 | tee arm64.txt
+          grep -q 'linker-signed' arm64.txt
+          codesign -dv --verbose=4 --arch x86_64 "$dylib" 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: yarg-link-macos-universal
+          path: ${{ runner.temp }}/yarg-link-package
+          if-no-files-found: error

@@ -22,6 +22,46 @@ can be merged into YARG upstream, we are changing the architecture:
 The first milestone is a **minimal viable product** that we can show upstream
 maintainers to demonstrate that it works.
 
+## MVP goals
+
+We aren't maintainers, so the MVP has to be easy to review and easy to say yes to:
+
+- **No major architectural changes.** Online code lives in its own place (`Assets/Script/Integration/Link`,
+  `Native/YargLink`). Changes to existing code are small hooks, have no effect while the link is off, and
+  reuse existing paths (replay playback, the player list, `EngineManager`) rather than replacing them.
+- **No YARG.Core changes.** The `YARG.Core` pin stays on an upstream commit. When something would be easier
+  with a Core change, we accept a documented limitation instead (see
+  [known limitations](#known-limitations-call-out-in-the-mvp-write-up)), and list the Core change as a
+  possible follow-up for the maintainers to decide on.
+
+Both are tradeoffs against polish, and the MVP write-up should say so.
+
+### Where the work stands (2026-11-14, compared with `dev`)
+
+- **YARG.Core: no changes.** The pin is the same as on `dev`.
+- **Online code is separate:** about 3,800 lines of C# in `Integration/Link`, plus the Rust library and
+  tests. Behind an Experimental setting (`LinkEnable`), off by default.
+- **Existing code: 17 files, +346 / −56 lines.** Most are `IsRemote` checks (no sounds, input
+  viewer, stem muting or rewinds for friends' tracks), plus a small `MenuManager.CurrentMenu` getter and
+  the settings, launch options and text for the link. The ones reviewers will look at most closely:
+  - **Each player has its own clock.** `BasePlayer.TimeLag` and `PlayerVisualTime` let a friend's track run
+    behind the song. Track elements now read the player's time instead of `GameManager.VisualTime`. For local
+    players the lag is always 0, so nothing changes for them, but "every track shares one clock" no longer
+    holds in the code.
+  - **Engine managers for friends.** `GameManager.EngineManagerFor` gives each friend their own
+    `EngineManager`. Every player registers through it. The host-authoritative fail meter will route friends'
+    engines into the host's main manager instead.
+  - **Synced start.** An `await` in `GameManager.Loading` holds on the loading screen until the start is
+    scheduled, then adds friends' tracks.
+  - **Fail sync.** The fail routine is shared by a local fail and a fail from the link.
+- **The biggest ask isn't in the game code: Rust in the native build** (open question 2). It adds a language
+  and toolchain to the build, even though it doesn't change YARG's architecture.
+- **The remaining fail meter work fits the goals.** The host meter can use `EngineManager` as it is, by
+  accepting the star power score drift. Reviving (`EngineManager.RevivePlayer`) and marking a player failed
+  (`EngineContainer.PlayerHasFailed`) are public in Core. Showing the host's meter value on a client will
+  need a change in YARG's `FailMeter` (it reads `EngineManager.Happiness`, which is computed and has no
+  setter), not in Core.
+
 ## Why not keep the sidecar
 
 | Problem | Effect on a polished product |
@@ -202,7 +242,7 @@ Phase 1 notes (2026-11-14):
 - [x] Move the iroh code from this repo into `Native/YargLink` as a `cdylib` with the interface above.
 - [x] Rust unit tests and a C test harness that loads the library and exchanges messages between two handles.
 - [x] `NativeLinkTransport` P/Invoke bindings, loaded the same way as `YargAudioBindings.cs`.
-- [ ] Linux build works with a friend over the internet: direct and relay paths, synced start, highways.
+- [x] Linux build works with a friend over the internet: direct and relay paths, synced start, highways.
 
 Phase 2 notes (2026-11-14):
 
@@ -240,10 +280,38 @@ Phase 2 notes (2026-11-14):
 
 ### Phase 3: cross-platform CI
 
-- [ ] `native-link.yml` with Windows, Linux and macOS jobs, plus the export, architecture, glibc and signature checks.
-- [ ] `NativeBuild` `cargo` backend and the byte-identical check.
-- [ ] Commit the binaries under `Assets/Plugins/YargLink/{Windows,Linux,Mac}` with Unity `.meta` platform settings.
+- [x] `native-link.yml` with Windows, Linux and macOS jobs, plus the export, architecture, glibc and signature checks. (Written; not run on GitHub yet.)
+- [x] `NativeBuild` `cargo` backend and the byte-identical check.
+- [ ] Commit the binaries under `Assets/Plugins/YargLink/{Windows,Linux,Mac}` with Unity `.meta` platform settings. (Linux binary and all `.meta` files done; Windows and macOS binaries come from the first CI run.)
 - [ ] Test across platforms: Windows ↔ macOS ↔ Linux.
+
+Phase 3 notes (2026-11-15):
+
+- `NativeBuild` takes `--library audio|link` for both `build` and `package`. The default is `audio`, so
+  YargAudio's commands and `native-audio.yml` are unchanged (checked: the YargAudio build and its
+  integration test still pass). `LinkBuildCommand` runs the Rust tests, builds the release library
+  for each Rust target, checks it (glibc floor and exports on Linux; architectures and exports on
+  macOS), runs the C harness (both macOS slices, x86_64 under Rosetta) and the C# tests with
+  `YARG_LINK_LIBRARY` pointing at it, then copies it, writes it to `--output`, or verifies the
+  committed plugin.
+- **Byte-identical builds work on Linux.** Two builds at different source and `CARGO_HOME` paths
+  (`/src` with `/root/.cargo`, and GitHub's `/__w/...` with `/github/home/.cargo`) give the same
+  bytes. Without `--remap-path-prefix` they can't: the library embeds about 800 crate paths in panic
+  locations. A simulated CI job (NativeBuild in `ubuntu:20.04` at GitHub's paths) matched the
+  committed `.so`. The flags are passed as `CARGO_ENCODED_RUSTFLAGS`, so paths with spaces work.
+  Windows isn't compared, as with YargAudio. The check is unproven on macOS until CI runs.
+- Outside `ubuntu:20.04`, NativeBuild builds the Linux library in a docker container of that image,
+  with the toolchain and crates cached in docker volumes. That replaces `build-linux.sh`, which
+  built without the path remapping.
+- macOS: `MACOSX_DEPLOYMENT_TARGET=11.0` (YargAudio's value). Stripping is done by the linker
+  (`-Wl,-x`, cargo's strip off) instead of afterwards, so the linker's ad-hoc signature stays
+  valid. CI checks that the arm64 slice is `linker-signed`.
+- Windows: static CRT plus `/Brepro`, and CI checks with `dumpbin` that the DLL doesn't depend on
+  the VC++ runtime.
+- `Tests/YARG.Link.Tests/YARG.Link.Tests.csproj` was never committed (`.gitignore` ignores
+  `*.csproj`) and has been added with an exception. With `YARG_LINK_REQUIRE_NATIVE=1`, which
+  NativeBuild sets, a missing library fails the native tests instead of skipping them.
+- Linux binary: 11.8 MB, newest glibc symbol 2.30.
 
 ### Phase 4: MVP polish (demo-ready)
 
@@ -305,9 +373,3 @@ on one machine can fail the band while the other machine's meter is fine.
 4. Which minimum macOS version does YARG target?
 5. Would maintainers accept a YARG.Core option to register an engine for the fail meter only? It would
    remove the star power score drift described under known limitations.
-
-## This repository
-
-yarg-link (the sidecar) is paused. It stays as the reference implementation of
-the prototype protocol and the `fake-game` test tool. The iroh transport code
-moves to `Native/YargLink` in the YARG fork, and new work happens there.

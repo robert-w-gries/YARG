@@ -44,6 +44,7 @@ ExportedObj/
 .consulo/
 *.csproj
 !/Native/YargAudio/tests/GainIntegration/GainIntegration.csproj
+!/Tests/YARG.Link.Tests/YARG.Link.Tests.csproj
 /Native/YargAudio/tests/GainIntegration/[Bb]in/
 /Native/YargAudio/tests/GainIntegration/[Oo]bj/
 /scripts/NativeBuild/[Bb]in/

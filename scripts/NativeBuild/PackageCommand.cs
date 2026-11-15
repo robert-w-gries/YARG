@@ -3,14 +3,15 @@ using System.Text.Json;
 
 internal static class PackageCommand
 {
-    // Native audio workflow is registered on existing repositories. It now
-    // publishes all three platform artifacts before its committed-plugin gate.
-    private const string WorkflowFile = "native-audio.yml";
-
+    // Each library's workflow publishes all three platform artifacts before
+    // its committed-plugin gate, so packaging works while the committed
+    // plugins are stale.
     public static async Task<int> RunAsync(
         RepositoryLayout repository,
         PackageOptions options)
     {
+        string workflowFile = NativeLibraries.WorkflowFile(options.Library);
+        string artifactPrefix = NativeLibraries.ArtifactPrefix(options.Library);
         DateTimeOffset dispatchStarted = DateTimeOffset.UtcNow;
         CommandResult dispatch = await GhAsync(
             repository,
@@ -18,21 +19,21 @@ internal static class PackageCommand
             [
                 "workflow",
                 "run",
-                WorkflowFile,
+                workflowFile,
                 "--ref",
                 options.RemoteRef,
             ]);
 
         PrintCommandOutput(dispatch);
         WorkflowRun run = await FindDispatchedRunAsync(
-            repository, options, dispatchStarted);
+            repository, options, workflowFile, dispatchStarted);
         Console.WriteLine($"GitHub Actions run: {run.Url}");
 
         await WaitForRunAsync(repository, run, options);
 
         string downloadDirectory = Path.Combine(
             Path.GetTempPath(),
-            $"yarg-audio-package-{Guid.NewGuid():N}");
+            $"{artifactPrefix}package-{Guid.NewGuid():N}");
         Directory.CreateDirectory(downloadDirectory);
 
         try
@@ -45,14 +46,15 @@ internal static class PackageCommand
                     "download",
                     run.DatabaseId.ToString(CultureInfo.InvariantCulture),
                     "--pattern",
-                    "yarg-audio-*",
+                    artifactPrefix + "*",
                     "--dir",
                     downloadDirectory,
                 ]);
             PrintCommandOutput(download);
 
             IReadOnlyList<DownloadedPlugin> plugins =
-                FindAndValidateArtifacts(downloadDirectory);
+                FindAndValidateArtifacts(
+                    NativeLibraries.Plugins(options.Library), downloadDirectory);
             foreach (DownloadedPlugin downloaded in plugins)
             {
                 CopyToUnity(repository, downloaded);
@@ -79,6 +81,7 @@ internal static class PackageCommand
     private static async Task<WorkflowRun> FindDispatchedRunAsync(
         RepositoryLayout repository,
         PackageOptions options,
+        string workflowFile,
         DateTimeOffset dispatchStarted)
     {
         DateTimeOffset deadline = DateTimeOffset.UtcNow.AddMinutes(
@@ -94,7 +97,7 @@ internal static class PackageCommand
                     "run",
                     "list",
                     "--workflow",
-                    WorkflowFile,
+                    workflowFile,
                     "--limit",
                     "50",
                     "--json",
@@ -184,10 +187,11 @@ internal static class PackageCommand
     }
 
     private static IReadOnlyList<DownloadedPlugin> FindAndValidateArtifacts(
+        IReadOnlyList<IUnityPlugin> plugins,
         string downloadDirectory)
     {
         var downloaded = new List<DownloadedPlugin>();
-        foreach (NativePlugin plugin in NativePlugins.All)
+        foreach (IUnityPlugin plugin in plugins)
         {
             string binary = FindArtifactFile(
                 downloadDirectory, plugin.ArtifactName, plugin.BinaryName);
@@ -370,7 +374,7 @@ internal static class PackageCommand
     }
 
     private sealed record DownloadedPlugin(
-        NativePlugin Plugin,
+        IUnityPlugin Plugin,
         string BinaryPath,
         string MetadataPath);
 
