@@ -23,9 +23,9 @@ use iroh::{
 use serde::Deserialize;
 use tokio::{runtime::Runtime, sync::mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{Dispatch, debug, info, warn};
+use tracing::{Dispatch, debug, info};
 
-use crate::{key, log, ticket};
+use crate::{log, ticket};
 
 /// ALPN for this protocol. Bump the suffix on any wire-format change.
 pub const ALPN: &[u8] = b"yarg-link/3";
@@ -87,7 +87,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub key_file: Option<String>,
     pub relay: bool,
     pub address_lookup: bool,
     pub bind_addr: Option<String>,
@@ -103,7 +102,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            key_file: None,
             relay: true,
             address_lookup: true,
             bind_addr: None,
@@ -326,7 +324,6 @@ pub struct Node {
     dispatch: Dispatch,
     ticket_addrs: bool,
     connect_timeout: Duration,
-    _key: Option<key::StoredKey>,
 }
 
 impl Node {
@@ -350,9 +347,11 @@ impl Node {
         };
 
         tracing::dispatcher::with_default(&dispatch, || {
-            let (secret, stored) = Self::load_key(&config);
-            let endpoint = runtime.block_on(Self::bind(&config, secret))?;
-            info!("endpoint {} is up", endpoint.id());
+            // A new identity, and so a new ticket, for every handle: an invite code stops working once its
+            // session ends, and a joiner can't be recognised from one session to the next
+            let endpoint = runtime.block_on(Self::bind(&config, SecretKey::generate()))?;
+            // Shortened: logs get posted publicly, and the full ID is the invite code
+            info!("endpoint {} is up", endpoint.id().fmt_short());
 
             if config.accept {
                 let timeout = config.connect_timeout().min(INCOMING_TIMEOUT);
@@ -368,26 +367,8 @@ impl Node {
                 dispatch: dispatch.clone(),
                 ticket_addrs: config.ticket_addrs,
                 connect_timeout: config.connect_timeout(),
-                _key: stored,
             })
         })
-    }
-
-    fn load_key(config: &Config) -> (SecretKey, Option<key::StoredKey>) {
-        let Some(path) = config.key_file.as_deref() else {
-            return (SecretKey::generate(), None);
-        };
-        match key::load_or_create(path.as_ref()) {
-            Ok(Some(stored)) => (stored.key.clone(), Some(stored)),
-            Ok(None) => {
-                warn!("{path} is in use by another process; using a temporary identity");
-                (SecretKey::generate(), None)
-            }
-            Err(e) => {
-                warn!("couldn't load {path} ({e}); using a temporary identity");
-                (SecretKey::generate(), None)
-            }
-        }
     }
 
     async fn bind(config: &Config, secret: SecretKey) -> Result<Endpoint> {
@@ -501,6 +482,13 @@ impl Node {
             debug!(peer = id, "datagram dropped: {e}");
         }
         Ok(())
+    }
+
+    /// The peer's endpoint ID, once its connection is up. Authenticated by the handshake, so a
+    /// peer can't claim another's ID (though it can make a new one whenever it likes).
+    pub fn peer_id(&self, id: u32) -> Option<String> {
+        let peer = self.shared.peer(id)?;
+        peer.conn.get().map(|conn| conn.remote_id().to_string())
     }
 
     pub fn stats(&self, id: u32) -> Stats {

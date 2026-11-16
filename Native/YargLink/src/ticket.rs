@@ -8,8 +8,11 @@
 //! 3b6a...e1f0@192.168.1.20:51234,https://euw1-1.relay.iroh.network./
 //! ```
 //!
-//! A bare endpoint ID is short and never goes stale, so it makes a good invite code; iroh finds
+//! A bare endpoint ID is short and survives address changes, so it makes a good invite code; iroh finds
 //! the addresses through n0's DNS. Addresses help when that lookup is off (tests, LAN-only).
+//!
+//! Errors never include the ticket: it's an invite code, and what the player pasted may not even
+//! be one (anything from the clipboard), and errors end up in logs.
 
 use std::{net::SocketAddr, str::FromStr};
 
@@ -25,7 +28,7 @@ pub fn parse(ticket: &str) -> Result<EndpointAddr, String> {
         Some((id, addrs)) => (id, Some(addrs)),
         None => (ticket, None),
     };
-    let id = EndpointId::from_str(id.trim()).map_err(|e| format!("not an endpoint ID ({e}): {id}"))?;
+    let id = EndpointId::from_str(id.trim()).map_err(|e| format!("not an endpoint ID ({e})"))?;
 
     let mut addr = EndpointAddr::new(id);
     for part in addrs.into_iter().flat_map(|a| a.split(',')).map(str::trim) {
@@ -33,10 +36,10 @@ pub fn parse(ticket: &str) -> Result<EndpointAddr, String> {
             continue;
         }
         if part.starts_with("http://") || part.starts_with("https://") {
-            let url = RelayUrl::from_str(part).map_err(|e| format!("bad relay URL ({e}): {part}"))?;
+            let url = RelayUrl::from_str(part).map_err(|e| format!("bad relay URL ({e})"))?;
             addr = addr.with_relay_url(url);
         } else {
-            let ip = SocketAddr::from_str(part).map_err(|e| format!("bad address ({e}): {part}"))?;
+            let ip = SocketAddr::from_str(part).map_err(|e| format!("bad address ({e})"))?;
             addr = addr.with_ip_addr(ip);
         }
     }
@@ -106,5 +109,20 @@ mod tests {
         assert!(parse("not-a-key").is_err());
         let id = SecretKey::generate().public();
         assert!(parse(&format!("{id}@nowhere")).is_err());
+    }
+
+    #[test]
+    fn errors_do_not_repeat_the_ticket() {
+        let id = SecretKey::generate().public().to_string();
+        for bad in [
+            "hunter2-correct-horse-battery-staple".to_string(),
+            format!("{id}@secret-host-name"),
+            format!("{id}@https://user:password@"),
+            format!("{}x", &id[..63]),
+        ] {
+            let error = parse(&bad).unwrap_err();
+            assert!(!error.contains("hunter2") && !error.contains("secret-host") && !error.contains("password"), "{error}");
+            assert!(!error.contains(&id[..16]), "{error}");
+        }
     }
 }
