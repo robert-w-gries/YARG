@@ -700,6 +700,15 @@ namespace YARG.Gameplay
         public double GetInputTime(double inputSystemTime)
             => _songRunner.GetInputTime(inputSystemTime);
 
+        /// <summary>
+        /// Input time right now, rather than at the start of this frame like <see cref="InputTime"/>.
+        /// While paused it's the paused time.
+        /// </summary>
+        public double CurrentInputTime => Paused ? InputTime : GetInputTime(InputManager.CurrentInputTime);
+
+        /// <inheritdoc cref="SongRunner.ShiftInputTime"/>
+        public void ShiftInputTime(double seconds) => _songRunner.ShiftInputTime(seconds);
+
         /// <inheritdoc cref="SongRunner.GetAudioPlaybackTime"/>
         public double GetAudioPlaybackTime(double songTime)
             => _songRunner.GetAudioPlaybackTime(songTime);

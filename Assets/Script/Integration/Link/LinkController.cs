@@ -218,6 +218,7 @@ namespace YARG.Integration.Link
             CheckRemoteRequestAbandoned();
             CheckSongEnded();
             UpdateBandMeter();
+            UpdateClockSync();
         }
 
         private void LateUpdate()
@@ -716,6 +717,7 @@ namespace YARG.Integration.Link
             _paths.Clear();
             _shared = null;
             EndBandMeter();
+            EndClockSync();
         }
 
         private void OnMemberJoined(LinkMember member)
@@ -892,6 +894,7 @@ namespace YARG.Integration.Link
                 {
                     _shared = shared;
                     StartBandMeter(gameManager);
+                    StartClockSync();
                     return StartResult.Synced;
                 }
 
@@ -1089,6 +1092,7 @@ namespace YARG.Integration.Link
                         {
                             existing.Receive(data, Now);
                         }
+                        OnClockSample(member, data);
                         break;
 
                     case KIND_FAILED:
@@ -1148,6 +1152,7 @@ namespace YARG.Integration.Link
 
             _shared = null;
             EndBandMeter();
+            EndClockSync();
 
             // Setups that were used are done with; ones still waiting for us to join are kept
             var used = new List<string>();
@@ -1339,6 +1344,8 @@ namespace YARG.Integration.Link
                     ["seq"]     = _seq++,
                     // Every input up to this time has been recorded (before each player's calibration)
                     ["time"]    = gm.InputTime,
+                    // Our input time right now, for friends to measure how far apart our clocks are
+                    ["clock"]   = gm.CurrentInputTime,
                     ["players"] = players,
                 };
             }
@@ -1503,6 +1510,10 @@ namespace YARG.Integration.Link
                     bool stalled = !gm.Paused && Now - feed.LastReceived > RemoteInputFeed.STALL_SECONDS;
                     var member = FindMember(feed.Member);
                     string connection = member == null ? null : DescribeConnection(member);
+                    if (SyncDetail(feed) is { } sync)
+                    {
+                        connection = connection == null ? sync : $"{connection} · {sync}";
+                    }
                     rows.Add((feed.Name, Detail(feed.Stars, feed.Combo, feed.NotesHit, feed.TotalNotes),
                         feed.Score, false, stalled, connection));
                 }

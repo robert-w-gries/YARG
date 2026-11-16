@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using PlasticBand.Haptics;
 using UnityEngine;
@@ -129,16 +130,26 @@ namespace YARG.Gameplay.Player
         public bool IsRemote => Player.IsRemote;
 
         /// <summary>
-        /// How far behind the song this player is drawn and simulated, in seconds.
-        /// Always 0 except for remote players, which run behind by the network delay.
+        /// How far behind the song this player's engine runs, in seconds. Always 0 except for remote players,
+        /// whose inputs arrive a network delay late. Their track is still drawn in time with the song, so their
+        /// hits show up this late.
         /// </summary>
-        public double TimeLag { get; private set; }
+        public double EngineLag { get; private set; }
 
         /// <summary>
         /// The visual time this player's track is drawn at. Use this instead of
         /// <see cref="GameManager.VisualTime"/> for anything positioned on the track.
         /// </summary>
-        public double PlayerVisualTime => GameManager.VisualTime - TimeLag;
+        public double PlayerVisualTime => GameManager.VisualTime;
+
+        /// <summary>
+        /// How far past the strike line (in track units) this player's notes need to stay before they're
+        /// removed, so a remote player's late hits still find them. Capped, so a stalled connection doesn't
+        /// keep every passed note around.
+        /// </summary>
+        public float LateHitAllowance => (float) (Math.Min(EngineLag, MAX_LATE_HIT_SECONDS) * NoteSpeed);
+
+        private const double MAX_LATE_HIT_SECONDS = 1.0;
 
         protected override void GameplayAwake()
         {
@@ -239,14 +250,10 @@ namespace YARG.Gameplay.Player
             // Only advance the engine as far as the friend's game has sent inputs for,
             // so it never misses a note whose input is still in flight
             double inputTime = GameManager.InputTime;
-            if (!GameManager.Rewinding && feed.TryGetPlaybackTime(inputTime, Time.unscaledDeltaTime, out double time))
+            if (!GameManager.Rewinding && feed.TryGetPlaybackTime(inputTime, out double time))
             {
-                TimeLag = inputTime - time;
+                EngineLag = inputTime - time;
                 UpdateInputs(time);
-            }
-            else if (!feed.HasData)
-            {
-                TimeLag = feed.Delay;
             }
 
             UpdateVisuals(PlayerVisualTime);
