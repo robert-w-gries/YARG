@@ -171,6 +171,9 @@ namespace YARG.Integration.Link.Session
         /// <summary>The host removed this member from the session.</summary>
         public const string KICKED = "kicked";
 
+        /// <summary>The host already has as many members as it takes.</summary>
+        public const string FULL = "full";
+
         /// <summary>Refused for another reason (both hosting, already in the session, ...).</summary>
         public const string REFUSED = "refused";
     }

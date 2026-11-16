@@ -327,6 +327,167 @@ fn messages_sent_right_before_destroy_still_arrive() {
     b.expect(YL_EVENT_PEER_DISCONNECTED);
 }
 
+/// A misbehaving peer, speaking the wire format by hand.
+struct RawPeer {
+    runtime: tokio::runtime::Runtime,
+    conn: iroh::endpoint::Connection,
+    send: iroh::endpoint::SendStream,
+    recv: iroh::endpoint::RecvStream,
+    _endpoint: iroh::Endpoint,
+}
+
+impl RawPeer {
+    /// Connect and open the stream, without sending anything on it yet.
+    fn connect(ticket: &str) -> RawPeer {
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let addr = ticket::parse(ticket).unwrap();
+        let (endpoint, conn, send, recv) = runtime.block_on(async {
+            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .relay_mode(iroh::RelayMode::Disabled)
+                .clear_ip_transports()
+                .bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
+                .unwrap()
+                .bind()
+                .await
+                .unwrap();
+            let conn = endpoint.connect(addr, node::ALPN).await.unwrap();
+            let (send, recv) = conn.open_bi().await.unwrap();
+            (endpoint, conn, send, recv)
+        });
+        RawPeer { runtime, conn, send, recv, _endpoint: endpoint }
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let send = &mut self.send;
+        // The peer may already have hung up; that's what some tests are after
+        let _ = self.runtime.block_on(send.write_all(bytes));
+    }
+
+    fn hello(&mut self) {
+        self.write(&[3, 0, 0, 0, 0, 1, 0]);
+    }
+
+    /// Whether the other side closes the connection within `timeout`.
+    fn closed_within(&mut self, timeout: Duration) -> bool {
+        let (conn, recv) = (&self.conn, &mut self.recv);
+        self.runtime.block_on(async {
+            tokio::time::timeout(timeout, async {
+                // Drain whatever it sent (its hello) until the stream or connection ends
+                let mut buf = [0u8; 256];
+                while let Ok(Some(_)) = recv.read(&mut buf).await {}
+                conn.closed().await;
+            })
+            .await
+            .is_ok()
+        })
+    }
+}
+
+#[test]
+fn oversize_frame_closes_the_connection() {
+    let host = Handle::new(LOCAL_CONFIG);
+    let mut raw = RawPeer::connect(&host.ticket());
+    raw.hello();
+    host.expect(YL_EVENT_PEER_CONNECTED);
+
+    // Only the header: the host has to give up on the length alone, before any payload arrives
+    raw.write(&((MAX_FRAME + 1) as u32).to_le_bytes());
+    let (_, reason) = host.expect(YL_EVENT_PEER_DISCONNECTED);
+    let reason = String::from_utf8_lossy(&reason).into_owned();
+    assert!(reason.contains("over the"), "{reason}");
+    assert!(raw.closed_within(Duration::from_secs(5)));
+}
+
+#[test]
+fn oversize_hello_is_refused() {
+    let host = Handle::new(LOCAL_CONFIG);
+    let mut raw = RawPeer::connect(&host.ticket());
+    let mut frame = 1000u32.to_le_bytes().to_vec();
+    frame.push(0);
+    frame.extend_from_slice(&[0u8; 999]);
+    raw.write(&frame);
+    assert!(raw.closed_within(Duration::from_secs(5)));
+    assert!(host.next(Duration::from_millis(200)).is_none(), "never reported as connected");
+}
+
+#[test]
+fn reliable_payload_limit() {
+    let (a, b) = (Handle::new(LOCAL_CONFIG), Handle::new(LOCAL_CONFIG));
+    let (at_a, _) = pair(&a, &b);
+    assert_eq!(a.send(at_a, 0, &vec![0u8; MAX_FRAME]), YL_ERR_TOO_LARGE);
+
+    let biggest = vec![5u8; MAX_FRAME - 1];
+    assert_eq!(a.send(at_a, 0, &biggest), YL_OK);
+    let (_, data) = b.expect(YL_EVENT_MESSAGE);
+    assert_eq!(data.len(), biggest.len());
+}
+
+#[test]
+fn join_only_handle_refuses_incoming() {
+    let joiner = Handle::new(&LOCAL_CONFIG.replace("\"relay\"", "\"accept\": false, \"relay\""));
+    let other = Handle::new(LOCAL_CONFIG);
+    let peer = other.connect(&joiner.ticket()).unwrap();
+    let (ev, _) = other.expect(YL_EVENT_PEER_DISCONNECTED);
+    assert_eq!(ev.peer, peer);
+    assert!(joiner.next(Duration::from_millis(200)).is_none());
+
+    // It can still connect out
+    let host = Handle::new(LOCAL_CONFIG);
+    pair(&joiner, &host);
+}
+
+#[test]
+fn incoming_connections_are_capped() {
+    let host = Handle::new(&LOCAL_CONFIG.replace("\"relay\"", "\"max_peers\": 2, \"relay\""));
+    let ticket = host.ticket();
+    let mut joiners: Vec<_> = (0..3).map(|_| Handle::new(LOCAL_CONFIG)).collect();
+
+    for j in &joiners[..2] {
+        j.connect(&ticket).unwrap();
+        j.expect(YL_EVENT_PEER_CONNECTED);
+        host.expect(YL_EVENT_PEER_CONNECTED);
+    }
+    joiners[2].connect(&ticket).unwrap();
+    joiners[2].expect(YL_EVENT_PEER_DISCONNECTED);
+    assert!(host.next(Duration::from_millis(200)).is_none());
+
+    // A free slot can be used again
+    drop(joiners.remove(0));
+    host.expect(YL_EVENT_PEER_DISCONNECTED);
+    let late = Handle::new(LOCAL_CONFIG);
+    late.connect(&ticket).unwrap();
+    late.expect(YL_EVENT_PEER_CONNECTED);
+}
+
+#[test]
+fn flooding_peer_is_disconnected() {
+    let (a, b) = (Handle::new(LOCAL_CONFIG), Handle::new(LOCAL_CONFIG));
+    let (at_a, at_b) = pair(&a, &b);
+
+    // b doesn't poll, as if the game were busy, while a keeps sending
+    let limit = 16 * 1024;
+    for i in 0..limit + 100 {
+        if a.send(at_a, 0, &(i as u32).to_le_bytes()) != YL_OK {
+            break;
+        }
+    }
+    a.expect(YL_EVENT_PEER_DISCONNECTED);
+
+    let mut messages = 0;
+    loop {
+        let (ev, _) = b.next(Duration::from_secs(10)).expect("an event");
+        match ev.kind {
+            YL_EVENT_MESSAGE => messages += 1,
+            YL_EVENT_PEER_DISCONNECTED => {
+                assert_eq!(ev.peer, at_b);
+                break;
+            }
+            kind => panic!("unexpected event {kind}"),
+        }
+    }
+    assert_eq!(messages, limit, "everything up to the limit was kept");
+}
+
 /// Over the internet: a bare endpoint ID, found through n0's DNS, with n0's relays available.
 /// Needs network access, so it only runs on request: `cargo test -- --ignored`.
 #[test]

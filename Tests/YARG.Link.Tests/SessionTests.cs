@@ -37,9 +37,11 @@ namespace YARG.Link.Tests
             public readonly List<LinkDisconnect> Disconnects = new();
             public readonly List<(string From, string Kind, JObject Data)> Data = new();
 
-            public Member(ILinkTransport transport, LinkRole role, string name, string game = "test")
+            public Member(ILinkTransport transport, LinkRole role, string name, string game = "test",
+                Action<LinkSessionOptions> configure = null)
             {
                 var options = new LinkSessionOptions { Name = name, GameVersion = game, StartLeadSeconds = 0.5 };
+                configure?.Invoke(options);
                 Session = new LinkSession(transport, role, options, () => Clock.Elapsed.TotalSeconds);
                 Session.LogInfo = Log.Add;
                 Session.LogWarning = m => Log.Add("WARN " + m);
@@ -68,9 +70,9 @@ namespace YARG.Link.Tests
             _all.Clear();
         }
 
-        private Member Add(LinkRole role, string name, string game = "test")
+        private Member Add(LinkRole role, string name, string game = "test", Action<LinkSessionOptions> configure = null)
         {
-            var m = new Member(NewTransport(), role, name, game);
+            var m = new Member(NewTransport(), role, name, game, configure);
             _all.Add(m);
             return m;
         }
@@ -86,9 +88,9 @@ namespace YARG.Link.Tests
             }
         }
 
-        private (Member Host, Member A, Member B) ThreeMembers()
+        private (Member Host, Member A, Member B) ThreeMembers(Action<LinkSessionOptions> configureHost = null)
         {
-            var host = Add(LinkRole.Host, "Host");
+            var host = Add(LinkRole.Host, "Host", configure: configureHost);
             var a = Add(LinkRole.Join, "A");
             var b = Add(LinkRole.Join, "B");
             a.Session.Join(host.Session.LocalTicket);
@@ -293,6 +295,121 @@ namespace YARG.Link.Tests
             Assert.That(a.Disconnects[0].CanRetry, Is.False);
             Assert.That(a.Session.IsConnected, Is.False);
             Assert.Throws<InvalidOperationException>(() => b.Session.Kick(b.Session.Members.First()));
+        }
+
+        [Test]
+        public void OversizeMessageFromAJoinerIsNotRelayed()
+        {
+            var (host, a, b) = ThreeMembers(o => o.MaxMessageBytes = 2000);
+
+            a.Session.Broadcast("setup", new JObject { ["blob"] = new string('x', 5000) });
+            PumpUntil(() => host.HasMembers("B") && b.HasMembers("Host"));
+            Assert.That(host.Data, Is.Empty);
+            Assert.That(b.Data, Is.Empty);
+
+            // Everyone else carries on
+            host.Session.Broadcast("inputs", new JObject { ["n"] = 1 });
+            PumpUntil(() => b.Data.Count == 1);
+        }
+
+        [Test]
+        public void FullSessionIsRefused()
+        {
+            var host = Add(LinkRole.Host, "Host", configure: o => o.MaxMembers = 1);
+            var a = Add(LinkRole.Join, "A");
+            var b = Add(LinkRole.Join, "B");
+            a.Session.Join(host.Session.LocalTicket);
+            PumpUntil(() => host.HasMembers("A"));
+
+            b.Session.Join(host.Session.LocalTicket);
+            PumpUntil(() => b.Disconnects.Count == 1);
+            Assert.That(b.Disconnects[0].Code, Is.EqualTo(ByeCodes.FULL));
+            Assert.That(host.HasMembers("A"), Is.True);
+        }
+
+        [Test]
+        public void ConnectionsThatNeverSayHelloAreCapped()
+        {
+            var host = Add(LinkRole.Host, "Host", configure: o => o.MaxUnadmittedPeers = 2);
+
+            // Bare transports: they connect, but never speak the session protocol
+            var silent = Enumerable.Range(0, 3).Select(_ => NewTransport()).ToList();
+            try
+            {
+                var peers = silent.Select(t => t.Connect(host.Session.LocalTicket)).ToList();
+                var connected = new bool[3];
+                var dropped = new bool[3];
+                PumpUntil(() =>
+                {
+                    for (int i = 0; i < silent.Count; i++)
+                    {
+                        while (silent[i].TryPoll(out var ev))
+                        {
+                            if (ev.Type == LinkEventType.PeerConnected) connected[i] = true;
+                            if (ev.Type == LinkEventType.PeerDisconnected) dropped[i] = true;
+                        }
+                    }
+                    return dropped.Count(d => d) == 1;
+                });
+
+                // Well before the hello timeout, the third one in was dropped and the others kept
+                Assert.That(dropped.Count(d => d), Is.EqualTo(1));
+                Assert.That(host.Log.Count(l => l.Contains("too many connections waiting")), Is.EqualTo(1));
+            }
+            finally
+            {
+                foreach (var t in silent) t.Dispose();
+            }
+        }
+
+        [Test]
+        public void FloodingJoinerIsDroppedAndOthersAreNot()
+        {
+            var (host, a, b) = ThreeMembers(o =>
+            {
+                o.MessagesPerSecond = 50;
+                o.BurstSeconds = 1;
+            });
+
+            for (int i = 0; i < 500; i++)
+            {
+                a.Session.Broadcast("inputs", new JObject { ["n"] = i });
+            }
+
+            PumpUntil(() => a.Disconnects.Count == 1 && host.HasMembers("B") && b.HasMembers("Host"));
+            Assert.That(host.Data.Count, Is.LessThan(100), "the flood was cut off");
+            Assert.That(a.Disconnects[0].CanRetry, Is.False);
+
+            b.Session.Broadcast("inputs", new JObject { ["from"] = "B" });
+            PumpUntil(() => host.Data.Any(d => d.From == "B"));
+        }
+
+        [Test]
+        public void PeerTextIsClamped()
+        {
+            var host = Add(LinkRole.Host, "Host");
+            var a = Add(LinkRole.Join, new string('A', 500));
+            var b = Add(LinkRole.Join, "B");
+            a.Session.Join(host.Session.LocalTicket);
+            b.Session.Join(host.Session.LocalTicket);
+            PumpUntil(() => host.Session.Members.Count == 2 && b.Session.Members.Count == 2);
+
+            var players = Enumerable.Range(0, 100)
+                .Select(i => new PlayerInfo { Name = new string('p', 300), Instrument = new string('i', 300) })
+                .ToList();
+            a.Session.SetLocalState(new string('s', 1000), players);
+
+            Func<Member, LinkMember> aAt = m => m.Session.Members.Single(x => x.Name.StartsWith("A"));
+            PumpUntil(() => aAt(b).Players.Count > 0);
+            foreach (var at in new[] { host, b })
+            {
+                var seen = aAt(at);
+                Assert.That(seen.Name.Length, Is.EqualTo(LinkLimits.MAX_NAME_LENGTH));
+                Assert.That(seen.Status.Length, Is.EqualTo(LinkLimits.MAX_SHORT_LENGTH));
+                Assert.That(seen.Players.Count, Is.EqualTo(LinkLimits.MAX_PLAYERS_PER_MEMBER));
+                Assert.That(seen.Players[0].Name.Length, Is.EqualTo(LinkLimits.MAX_NAME_LENGTH));
+                Assert.That(seen.Players[0].Instrument.Length, Is.EqualTo(LinkLimits.MAX_SHORT_LENGTH));
+            }
         }
 
         [Test]

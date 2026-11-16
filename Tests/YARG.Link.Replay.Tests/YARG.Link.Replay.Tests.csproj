@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Tests for the check the online link runs on friends' replay data before YARG.Core parses it
+    (Assets/Script/Integration/Link/ReplayBlobCheck.cs), against YARG.Core's own replay serializer.
+    Separate from YARG.Link.Tests, which stays free of YARG.Core. Run with:
+      dotnet test Tests/YARG.Link.Replay.Tests
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Assets/Script/Integration/Link/ReplayBlobCheck.cs" Link="Link/ReplayBlobCheck.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../YARG.Core/YARG.Core/YARG.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
+    <PackageReference Include="NUnit" Version="4.5.1" />
+    <PackageReference Include="NUnit3TestAdapter" Version="6.2.0" />
+  </ItemGroup>
+
+</Project>

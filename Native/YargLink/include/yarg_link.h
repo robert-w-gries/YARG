@@ -28,11 +28,14 @@ extern "C" {
 #define YL_API
 #endif
 
-/* Bumped on any incompatible change to this header. */
-#define YL_ABI_VERSION 1
+/* Bumped on any incompatible change to this header (or to what its functions promise). */
+#define YL_ABI_VERSION 2
 
 /* The largest payload YL_CHANNEL_UNRELIABLE takes. Real paths often allow a little more. */
 #define YL_MAX_UNRELIABLE 1024
+
+/* The largest payload YL_CHANNEL_RELIABLE takes. A peer that sends more is disconnected. */
+#define YL_MAX_RELIABLE (1024 * 1024 - 1)
 
 /* Status codes */
 #define YL_OK 0
@@ -41,7 +44,7 @@ extern "C" {
 #define YL_ERR_BIND (-3)              /* couldn't open the endpoint's sockets */
 #define YL_ERR_BAD_TICKET (-4)        /* yl_connect's ticket can't be parsed */
 #define YL_ERR_BUFFER_TOO_SMALL (-5)  /* the size needed is reported; nothing was consumed */
-#define YL_ERR_TOO_LARGE (-6)         /* unreliable payload over YL_MAX_UNRELIABLE */
+#define YL_ERR_TOO_LARGE (-6)         /* payload over YL_MAX_UNRELIABLE or YL_MAX_RELIABLE */
 #define YL_ERR_CLOSED (-7)            /* the handle is shutting down */
 #define YL_ERR_PANIC (-8)             /* a bug inside the library; the handle may be unusable */
 #define YL_ERR_INTERNAL (-9)
@@ -111,6 +114,14 @@ YL_API int yl_last_error(char *buf, size_t cap, size_t *len);
  *   "connect_timeout_ms" give up on a yl_connect after this long (default 20000)
  *   "log_filter"        tracing filter for YL_EVENT_LOG, e.g. "warn,yarg_link=debug"
  *                       (default "warn,yarg_link=info"; "off" for none)
+ *   "accept"            accept incoming connections (default true). A game that only joins
+ *                       others turns this off, so nobody can connect to it.
+ *   "max_peers"         the most peers at once, counting incoming connections that are still
+ *                       handshaking; further incoming connections are refused (default 16)
+ *
+ * Incoming connections get at most 10 seconds (or connect_timeout_ms, if shorter) to handshake,
+ * and only a few may handshake at once. A peer whose messages pile up unpolled (thousands of
+ * them, or tens of megabytes) is disconnected; its datagrams are dropped instead.
  */
 YL_API int yl_create(const char *config_json, yl_handle **out);
 

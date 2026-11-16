@@ -92,6 +92,29 @@ namespace YARG.Integration.Link.Session
 
         /// <summary>Drop connections that haven't said hello within this long.</summary>
         public double HelloTimeoutSeconds = 10.0;
+
+        /// <summary>Host only: the most joiners at once. More are refused with <see cref="ByeCodes.FULL"/>.</summary>
+        public int MaxMembers = 8;
+
+        /// <summary>Host only: connections that haven't said hello yet. More are dropped straight away.</summary>
+        public int MaxUnadmittedPeers = 4;
+
+        /// <summary>Messages larger than this are neither sent nor accepted; a peer that sends one is dropped.</summary>
+        public int MaxMessageBytes = LinkLimits.MAX_MESSAGE_BYTES;
+
+        /// <summary>
+        /// What one joiner may send the host, on average, in messages and bytes per second. Inputs go out at
+        /// up to 120 Hz, so these leave about twice the room a real game needs. A host may send each joiner
+        /// <see cref="MaxMembers"/> + 1 times as much, since it passes everyone's data on.
+        /// </summary>
+        public double MessagesPerSecond = 250;
+        public double BytesPerSecond    = 512 * 1024;
+
+        /// <summary>How far over the average rates a peer may go for a moment (a song setup, say).</summary>
+        public double BurstSeconds = 4.0;
+
+        /// <summary>Transport events handled per <see cref="LinkSession.Update"/>, so a flood can't stall a frame.</summary>
+        public int MaxEventsPerUpdate = 4096;
     }
 
     /// <summary>
@@ -121,10 +144,21 @@ namespace YARG.Integration.Link.Session
             public string ByeReason;
             public string ByeCode;
 
-            public PeerState(PeerId peer, double connectedAt)
+            /// <summary>What it may still send us right now.</summary>
+            public readonly TokenBucket Messages;
+            public readonly TokenBucket Bytes;
+
+            /// <summary>Refused or flooding: nothing more from it is handled.</summary>
+            public bool Dropped;
+
+            public PeerState(PeerId peer, double connectedAt, double messagesPerSecond, double bytesPerSecond,
+                double burstSeconds)
             {
                 Peer = peer;
                 ConnectedAt = connectedAt;
+                Messages = new TokenBucket(messagesPerSecond, Math.Max(1, messagesPerSecond * burstSeconds), connectedAt);
+                Bytes = new TokenBucket(bytesPerSecond, Math.Max(LinkLimits.MAX_MESSAGE_BYTES, bytesPerSecond * burstSeconds),
+                    connectedAt);
             }
         }
 
@@ -347,7 +381,8 @@ namespace YARG.Integration.Link.Session
         {
             if (_disposed) return;
 
-            while (!_disposed && _transport.TryPoll(out var ev))
+            int handled = 0;
+            while (!_disposed && handled++ < _options.MaxEventsPerUpdate && _transport.TryPoll(out var ev))
             {
                 switch (ev.Type)
                 {
@@ -395,7 +430,17 @@ namespace YARG.Integration.Link.Session
 
         private void OnPeerConnected(PeerId peer)
         {
-            var state = new PeerState(peer, _clock());
+            if (Role == LinkRole.Host && _peers.Values.Count(p => p.Member == null) >= _options.MaxUnadmittedPeers)
+            {
+                Warn($"dropping {peer}: too many connections waiting to say hello");
+                _transport.Disconnect(peer);
+                return;
+            }
+
+            // The host passes on everyone's data, so a joiner allows it proportionally more
+            double scale = Role == LinkRole.Join ? Math.Max(1, _options.MaxMembers) + 1 : 1;
+            var state = new PeerState(peer, _clock(), _options.MessagesPerSecond * scale,
+                _options.BytesPerSecond * scale, _options.BurstSeconds);
             _peers[peer] = state;
 
             if (Role == LinkRole.Join && peer != _hostPeer)
@@ -446,7 +491,24 @@ namespace YARG.Integration.Link.Session
 
         private void OnTransportMessage(PeerId peer, Delivery delivery, byte[] data)
         {
-            if (!_peers.TryGetValue(peer, out var state)) return;
+            if (!_peers.TryGetValue(peer, out var state) || state.Dropped) return;
+
+            // Check the size and rate before decoding anything
+            int limit = state.Member == null
+                ? Math.Min(_options.MaxMessageBytes, LinkLimits.MAX_UNADMITTED_MESSAGE_BYTES)
+                : _options.MaxMessageBytes;
+            if (data.Length > limit)
+            {
+                Refuse(state, $"sent a message of {data.Length} bytes, over the {limit} byte limit", ByeCodes.REFUSED);
+                return;
+            }
+
+            double now = _clock();
+            if (!state.Messages.TryTake(1, now) || !state.Bytes.TryTake(data.Length, now))
+            {
+                Refuse(state, "sent more data than a game would", ByeCodes.REFUSED);
+                return;
+            }
 
             LinkMessage message;
             try
@@ -468,8 +530,8 @@ namespace YARG.Integration.Link.Session
                     OnHello(state, hello);
                     return;
                 case ByeMessage bye:
-                    state.ByeReason = bye.Reason ?? "left";
-                    state.ByeCode = bye.Code;
+                    state.ByeReason = LinkLimits.Clamp(bye.Reason, LinkLimits.MAX_REASON_LENGTH) ?? "left";
+                    state.ByeCode = LinkLimits.Clamp(bye.Code, LinkLimits.MAX_SHORT_LENGTH);
                     return;
             }
 
@@ -507,18 +569,32 @@ namespace YARG.Integration.Link.Session
 
             if (hello.Game != _options.GameVersion)
             {
-                Refuse(state, $"different game versions ({hello.Game} and {_options.GameVersion})",
+                string theirs = LinkLimits.Clamp(hello.Game, LinkLimits.MAX_SHORT_LENGTH);
+                Refuse(state, $"different game versions ({theirs} and {_options.GameVersion})",
                     ByeCodes.INCOMPATIBLE);
                 return;
             }
 
-            if (string.IsNullOrEmpty(hello.Member) || hello.Member == LocalMemberId || _members.ContainsKey(hello.Member))
+            if (string.IsNullOrEmpty(hello.Member) || hello.Member.Length > LinkLimits.MAX_ID_LENGTH)
+            {
+                Refuse(state, "bad member ID", ByeCodes.REFUSED);
+                return;
+            }
+
+            if (hello.Member == LocalMemberId || _members.ContainsKey(hello.Member))
             {
                 Refuse(state, "already in this session", ByeCodes.REFUSED);
                 return;
             }
 
-            var member = new LinkMember(hello.Member, string.IsNullOrEmpty(hello.Name) ? "Friend" : hello.Name)
+            if (Role == LinkRole.Host && _members.Count >= _options.MaxMembers)
+            {
+                Refuse(state, "the session is full", ByeCodes.FULL);
+                return;
+            }
+
+            string name = LinkLimits.Clamp(hello.Name, LinkLimits.MAX_NAME_LENGTH);
+            var member = new LinkMember(hello.Member, string.IsNullOrEmpty(name) ? "Friend" : name)
             {
                 IsHost = hello.Host,
                 Peer = state.Peer,
@@ -561,28 +637,28 @@ namespace YARG.Integration.Link.Session
             switch (message)
             {
                 case SceneMessage scene:
-                    member.Scene = scene.Scene ?? SCENE_MENU;
+                    member.Scene = LinkLimits.Clamp(scene.Scene, LinkLimits.MAX_SHORT_LENGTH) ?? SCENE_MENU;
                     SendRoster();
                     Apply(_coordinator.OnTick(Present(), _clock()));
                     break;
 
                 case StateMessage memberState:
-                    member.Status = memberState.Status;
-                    member.Players = memberState.Players ?? new List<PlayerInfo>();
+                    member.Status = LinkLimits.Clamp(memberState.Status, LinkLimits.MAX_SHORT_LENGTH);
+                    member.Players = LinkLimits.Clamp(memberState.Players);
                     SendRoster();
                     break;
 
-                case ReadyMessage ready when ready.Song?.Hash != null:
-                    Info($"{member} is ready for {ready.Song}");
-                    Apply(_coordinator.OnReady(member.Id, ready.Song, Present(), _clock()));
+                case ReadyMessage ready when LinkLimits.Clamp(ready.Song) is { } song:
+                    Info($"{member} is ready for {song}");
+                    Apply(_coordinator.OnReady(member.Id, song, Present(), _clock()));
                     break;
 
-                case DeclineMessage decline:
-                    Info($"{member} declined: {decline.Reason}");
+                case DeclineMessage decline when decline.Hash == null || decline.Hash.Length <= LinkLimits.MAX_ID_LENGTH:
+                    Info($"{member} declined: {LinkLimits.Clamp(decline.Reason, LinkLimits.MAX_SHORT_LENGTH)}");
                     Apply(_coordinator.OnDecline(member.Id, decline.Hash, Present()));
                     break;
 
-                case GameDataMessage game:
+                case GameDataMessage game when game.Kind != null && game.Kind.Length <= LinkLimits.MAX_SHORT_LENGTH:
                     // Pass it on to the other joiners, who aren't connected to each other
                     var relay = new GameDataMessage { From = member.Id, Kind = game.Kind, Data = game.Data };
                     foreach (var other in _members.Values)
@@ -606,8 +682,8 @@ namespace YARG.Integration.Link.Session
                     ApplyRoster(roster);
                     break;
 
-                case LoadSongMessage load when load.Song?.Hash != null:
-                    Raise(() => LoadSongRequested?.Invoke(load.Song));
+                case LoadSongMessage load when LinkLimits.Clamp(load.Song) is { } song:
+                    Raise(() => LoadSongRequested?.Invoke(song));
                     break;
 
                 case StartMessage start:
@@ -625,10 +701,11 @@ namespace YARG.Integration.Link.Session
                 }
 
                 case CancelMessage cancel:
-                    Raise(() => StartCancelled?.Invoke(cancel.Reason ?? "cancelled"));
+                    string reason = LinkLimits.Clamp(cancel.Reason, LinkLimits.MAX_REASON_LENGTH) ?? "cancelled";
+                    Raise(() => StartCancelled?.Invoke(reason));
                     break;
 
-                case GameDataMessage game:
+                case GameDataMessage game when game.Kind != null && game.Kind.Length <= LinkLimits.MAX_SHORT_LENGTH:
                     if (game.From != null && _members.TryGetValue(game.From, out var from))
                     {
                         Raise(() => GameDataReceived?.Invoke(from, game.Kind, game.Data));
@@ -646,13 +723,20 @@ namespace YARG.Integration.Link.Session
             var seen = new HashSet<string>();
             var joined = new List<LinkMember>();
 
-            foreach (var info in roster.Members ?? new List<MemberInfo>())
+            // The host and its joiners, and us among them
+            int maxEntries = Math.Max(1, _options.MaxMembers) + 1;
+            foreach (var info in (roster.Members ?? new List<MemberInfo>()).Take(maxEntries))
             {
-                if (string.IsNullOrEmpty(info.Id) || info.Id == LocalMemberId || !seen.Add(info.Id)) continue;
+                if (info == null || string.IsNullOrEmpty(info.Id) || info.Id.Length > LinkLimits.MAX_ID_LENGTH ||
+                    info.Id == LocalMemberId || !seen.Add(info.Id))
+                {
+                    continue;
+                }
 
+                string name = LinkLimits.Clamp(info.Name, LinkLimits.MAX_NAME_LENGTH);
                 if (!_members.TryGetValue(info.Id, out var member))
                 {
-                    member = new LinkMember(info.Id, info.Name ?? "Friend");
+                    member = new LinkMember(info.Id, name ?? "Friend");
                     if (info.Host && _hostPeer is { } host)
                     {
                         member.Peer = host;
@@ -661,11 +745,11 @@ namespace YARG.Integration.Link.Session
                     joined.Add(member);
                 }
 
-                member.Name = info.Name ?? member.Name;
-                member.Scene = info.Scene ?? SCENE_MENU;
+                member.Name = name ?? member.Name;
+                member.Scene = LinkLimits.Clamp(info.Scene, LinkLimits.MAX_SHORT_LENGTH) ?? SCENE_MENU;
                 member.IsHost = info.Host;
-                member.Status = info.Status;
-                member.Players = info.Players ?? new List<PlayerInfo>();
+                member.Status = LinkLimits.Clamp(info.Status, LinkLimits.MAX_SHORT_LENGTH);
+                member.Players = LinkLimits.Clamp(info.Players);
             }
 
             var left = _members.Values.Where(m => !seen.Contains(m.Id)).ToList();
@@ -795,6 +879,12 @@ namespace YARG.Integration.Link.Session
         private void Send(PeerId peer, LinkMessage message, Delivery delivery)
         {
             var bytes = LinkProtocol.Encode(message);
+            if (bytes.Length > _options.MaxMessageBytes)
+            {
+                // The other side would drop us for it
+                Warn($"not sending a {LinkProtocol.TagOf(message)} of {bytes.Length} bytes, over the {_options.MaxMessageBytes} byte limit");
+                return;
+            }
             if (delivery == Delivery.Unreliable && bytes.Length > _transport.MaxUnreliableSize)
             {
                 delivery = Delivery.Reliable;
@@ -804,6 +894,9 @@ namespace YARG.Integration.Link.Session
 
         private void Refuse(PeerState state, string reason, string code)
         {
+            if (state.Dropped) return;
+            state.Dropped = true;
+
             Warn($"refusing {state.Peer}: {reason}");
             state.ByeReason ??= reason;
             state.ByeCode ??= code;
