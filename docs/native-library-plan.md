@@ -210,6 +210,12 @@ Plan:
 `online-native`, and `.gitignore` now covers its actual location. That
 `.gitignore` fix is a separate commit, so it can go upstream as its own PR.
 
+The screen setting fix (`ScreenHelper`, `CommandLineArgs`, `SettingsManager`) is also a separate
+commit. It is a side fix that multiplayer doesn't need: Unity's window arguments (`-screen-fullscreen`,
+`-screen-width`, `-screen-height`, `-window-mode`, `-popupwindow`) now win over the saved Fullscreen Mode
+and Resolution at startup, which makes it easier to run two instances side by side when testing. It isn't
+counted in the existing-code totals above, and it can go upstream as its own PR or be left out.
+
 ## Planned steps
 
 ### Phase 0: preparation
