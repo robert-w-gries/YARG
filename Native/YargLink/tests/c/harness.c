@@ -40,6 +40,7 @@ typedef int (*disconnect_fn)(yl_handle *, uint32_t);
 typedef int (*send_fn)(yl_handle *, uint32_t, uint8_t, const uint8_t *, size_t);
 typedef int (*poll_fn)(yl_handle *, yl_event *, uint8_t *, size_t);
 typedef int (*peer_stats_fn)(yl_handle *, uint32_t, yl_stats *);
+typedef int (*peer_id_fn)(yl_handle *, uint32_t, char *, size_t, size_t *);
 
 static abi_version_fn yl_abi_version_;
 static last_error_fn yl_last_error_;
@@ -51,6 +52,7 @@ static disconnect_fn yl_disconnect_;
 static send_fn yl_send_;
 static poll_fn yl_poll_;
 static peer_stats_fn yl_peer_stats_;
+static peer_id_fn yl_peer_id_;
 
 static const char *CONFIG =
     "{\"relay\": false, \"address_lookup\": false, \"bind_addr\": \"127.0.0.1:0\","
@@ -136,6 +138,12 @@ static void exchange(void) {
 
     yl_stats stats;
     CHECK(yl_peer_stats_(a, at_a, &stats) == YL_OK && stats.connected == 1, "stats");
+
+    /* The peer's endpoint ID: 64 hex characters */
+    char id[128];
+    size_t id_len = 0;
+    CHECK(yl_peer_id_(a, at_a, id, sizeof id, &id_len) == YL_OK && id_len == 64, "peer id");
+    CHECK(yl_peer_id_(a, 9999, id, sizeof id, &id_len) == YL_ERR_INVALID_ARG && id_len == 0, "unknown peer id");
     printf("rtt %lld us, path %u, sent %llu, received %llu\n", (long long) stats.rtt_us, stats.path,
            (unsigned long long) stats.bytes_sent, (unsigned long long) stats.bytes_received);
 
@@ -195,6 +203,7 @@ int main(int argc, char **argv) {
     BIND(yl_send);
     BIND(yl_poll);
     BIND(yl_peer_stats);
+    BIND(yl_peer_id);
 
     if (yl_abi_version_() != YL_ABI_VERSION) {
         fprintf(stderr, "ABI %u, header says %d\n", yl_abi_version_(), YL_ABI_VERSION);

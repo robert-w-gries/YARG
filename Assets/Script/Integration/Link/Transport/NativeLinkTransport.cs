@@ -18,12 +18,6 @@ namespace YARG.Integration.Link.Transport
     /// <summary>Settings for <see cref="NativeLinkTransport"/>; see <c>yl_create</c> in yarg_link.h.</summary>
     public sealed class NativeLinkConfig
     {
-        /// <summary>
-        /// Where the secret key lives, so the ticket stays the same between runs. <c>null</c> for a new
-        /// identity every time. If another process holds the key, a temporary one is used.
-        /// </summary>
-        public string KeyFile;
-
         /// <summary>Fall back to n0's public relays when a direct path can't be made.</summary>
         public bool Relay = true;
 
@@ -56,7 +50,6 @@ namespace YARG.Integration.Link.Transport
                 json.Append('"').Append(name).Append("\":").Append(value);
             }
 
-            if (KeyFile != null) Add("key_file", Quote(KeyFile));
             Add("relay", Relay ? "true" : "false");
             Add("address_lookup", AddressLookup ? "true" : "false");
             if (BindAddress != null) Add("bind_addr", Quote(BindAddress));
@@ -95,8 +88,9 @@ namespace YARG.Integration.Link.Transport
     /// in the YargLink native library (<c>Native/YargLink</c>).
     /// </summary>
     /// <remarks>
-    /// Tickets are endpoint IDs, optionally with <c>@</c> and direct addresses. The library runs its
-    /// own threads and never calls back; <see cref="TryPoll"/> drains its event queue.
+    /// Tickets are endpoint IDs, optionally with <c>@</c> and direct addresses. Every instance gets a new,
+    /// random endpoint ID, so its ticket stops working once it's disposed. The library runs its own threads
+    /// and never calls back; <see cref="TryPoll"/> drains its event queue.
     /// </remarks>
     public sealed class NativeLinkTransport : ILinkTransport
     {
@@ -105,7 +99,7 @@ namespace YARG.Integration.Link.Transport
         /// <summary>The largest reliable message (<c>YL_MAX_RELIABLE</c>).</summary>
         public const int MAX_RELIABLE_SIZE = 1024 * 1024 - 1;
 
-        private const int ABI_VERSION = 2;
+        private const int ABI_VERSION = 3;
 
         private const int YL_OK                   = 0;
         private const int YL_ERR_BAD_TICKET       = -4;
@@ -166,6 +160,7 @@ namespace YARG.Integration.Link.Transport
             int rc = Native.Connect(_handle, NullTerminated(ticket.Trim()), out uint peer);
             if (rc == YL_ERR_BAD_TICKET)
             {
+                // The library's message never includes the ticket, which may be anything from the clipboard
                 throw new FormatException($"Not a valid ticket: {Native.LastError()}");
             }
             Check(rc, "connect");
@@ -270,6 +265,20 @@ namespace YARG.Integration.Link.Transport
                 path,
                 (long) stats.BytesSent,
                 (long) stats.BytesReceived);
+        }
+
+        public unsafe string GetPeerIdentity(PeerId peer)
+        {
+            if (_handle == IntPtr.Zero) return null;
+
+            var buf = new byte[128];
+            UIntPtr len;
+            fixed (byte* ptr = buf)
+            {
+                if (Native.PeerId(_handle, peer.Value, ptr, (UIntPtr) buf.Length, out len) != YL_OK) return null;
+            }
+            if ((int) len > buf.Length) return null; // endpoint IDs are 64 characters
+            return Encoding.UTF8.GetString(buf, 0, (int) len);
         }
 
         public void Dispose()
@@ -389,6 +398,9 @@ namespace YARG.Integration.Link.Transport
             [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
             private delegate int PeerStatsFn(IntPtr handle, uint peer, out Stats stats);
 
+            [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+            private delegate int PeerIdFn(IntPtr handle, uint peer, byte* buf, UIntPtr cap, out UIntPtr len);
+
             private static readonly object _lock = new();
             private static IntPtr _library;
 
@@ -401,6 +413,7 @@ namespace YARG.Integration.Link.Transport
             private static SendFn        _send;
             private static PollFn        _poll;
             private static PeerStatsFn   _peerStats;
+            private static PeerIdFn      _peerId;
 
             public static void Load(string path)
             {
@@ -430,6 +443,7 @@ namespace YARG.Integration.Link.Transport
                     _send = Bind<SendFn>(library, "yl_send");
                     _poll = Bind<PollFn>(library, "yl_poll");
                     _peerStats = Bind<PeerStatsFn>(library, "yl_peer_stats");
+                    _peerId = Bind<PeerIdFn>(library, "yl_peer_id");
                     _library = library;
                 }
             }
@@ -462,6 +476,9 @@ namespace YARG.Integration.Link.Transport
 
             public static int PeerStats(IntPtr handle, uint peer, out Stats stats) =>
                 _peerStats(handle, peer, out stats);
+
+            public static int PeerId(IntPtr handle, uint peer, byte* buf, UIntPtr cap, out UIntPtr len) =>
+                _peerId(handle, peer, buf, cap, out len);
 
             private static T Bind<T>(IntPtr library, string name) where T : Delegate
             {

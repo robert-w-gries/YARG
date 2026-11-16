@@ -284,11 +284,17 @@ namespace YARG.Integration.Link
         {
             CloseIfOpen();
 
-            var dialog = DialogManager.Instance.ShowMessage($"Remove {member.Name}?",
-                $"{member.Name} leaves the session. They can join again with the invite code.");
+            string name = Escape(member.Name);
+            var dialog = DialogManager.Instance.ShowMessage($"Remove {name}?",
+                $"<b>Remove</b>: {name} leaves the session, and can't come back to it from the same game. " +
+                "Someone determined could still get back in with the invite code.\n\n" +
+                "<b>Remove and change code</b>: also starts a new session with a new invite code, so the old " +
+                "one stops working. Everyone else leaves too, and joins again with the new code.");
             dialog.ClearButtons();
             dialog.AddDialogButton("Menu.Common.Cancel", MenuData.Colors.CancelButton,
                 () => ReopenAfterDialog(null).Forget());
+            dialog.AddDialogButton("Menu.Link.RemoveAndNewCode", MenuData.Colors.ConfirmButton,
+                () => ReopenAfterDialog(() => Controller.KickAndChangeCode(member)).Forget());
             dialog.AddDialogButton("Menu.Link.Remove", MenuData.Colors.ConfirmButton,
                 () => ReopenAfterDialog(() => Controller.Kick(member)).Forget());
         }

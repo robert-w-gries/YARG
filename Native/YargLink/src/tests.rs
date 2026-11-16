@@ -242,6 +242,96 @@ fn failed_connect_is_reported() {
     drop(a);
 }
 
+impl Handle {
+    fn peer_id(&self, peer: u32) -> Result<String, i32> {
+        let mut len = 0usize;
+        let rc = unsafe { yl_peer_id(self.0, peer, ptr::null_mut(), 0, &mut len) };
+        if rc != YL_OK {
+            assert_eq!(len, 0);
+            return Err(rc);
+        }
+        let mut buf = vec![0u8; len];
+        assert_eq!(unsafe { yl_peer_id(self.0, peer, buf.as_mut_ptr().cast(), len, &mut len) }, YL_OK);
+        Ok(String::from_utf8(buf).unwrap())
+    }
+
+    /// Every log line queued so far, plus the other events.
+    fn drain_logs(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let mut ev = YlEvent::default();
+            match unsafe { yl_poll(self.0, &mut ev, buf.as_mut_ptr(), buf.len()) } {
+                1 => lines.push(String::from_utf8_lossy(&buf[..ev.len as usize]).into_owned()),
+                0 => return lines,
+                YL_ERR_BUFFER_TOO_SMALL => buf.resize(ev.len as usize, 0),
+                rc => panic!("yl_poll returned {rc}"),
+            }
+        }
+    }
+}
+
+/// The endpoint ID part of a ticket.
+fn id_of(ticket: &str) -> &str {
+    ticket.split('@').next().unwrap()
+}
+
+#[test]
+fn peer_id_is_the_other_sides_endpoint_id() {
+    let (a, b) = (Handle::new(LOCAL_CONFIG), Handle::new(LOCAL_CONFIG));
+    let (at_a, at_b) = pair(&a, &b);
+    assert_eq!(a.peer_id(at_a).unwrap(), id_of(&b.ticket()));
+    assert_eq!(b.peer_id(at_b).unwrap(), id_of(&a.ticket()));
+
+    // A short buffer still reports the full length
+    let mut len = 0usize;
+    let mut small = [0u8; 4];
+    assert_eq!(unsafe { yl_peer_id(a.0, at_a, small.as_mut_ptr().cast(), small.len(), &mut len) }, YL_OK);
+    assert_eq!(len, 64);
+
+    assert_eq!(a.peer_id(9999), Err(YL_ERR_INVALID_ARG));
+    assert_eq!(unsafe { yl_disconnect(a.0, at_a) }, YL_OK);
+    a.expect(YL_EVENT_PEER_DISCONNECTED);
+    assert_eq!(a.peer_id(at_a), Err(YL_ERR_INVALID_ARG));
+}
+
+#[test]
+fn every_handle_has_a_new_identity() {
+    // Invite codes stop working with their session, and joiners can't be recognised later
+    let first = Handle::new(LOCAL_CONFIG);
+    let first_id = id_of(&first.ticket()).to_string();
+    drop(first);
+    let second = Handle::new(LOCAL_CONFIG);
+    assert_ne!(id_of(&second.ticket()), first_id);
+
+    // An old key_file setting is ignored rather than bringing the stable identity back
+    let dir = std::env::temp_dir().join(format!("yarg-link-test-key-{}", std::process::id()));
+    let key = dir.join("secret.key");
+    let config = LOCAL_CONFIG.replacen('{', &format!("{{\"key_file\": {:?},", key.to_str().unwrap()), 1);
+    let (x, y) = (Handle::new(&config), Handle::new(&config));
+    assert_ne!(x.ticket(), y.ticket());
+    assert!(!key.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn logs_do_not_contain_full_endpoint_ids() {
+    let config = LOCAL_CONFIG.replace("warn,yarg_link=debug", "trace");
+    let (a, b) = (Handle::new(&config), Handle::new(&config));
+    let (at_a, _) = pair(&a, &b);
+    a.send(at_a, 0, b"hi");
+    b.expect(YL_EVENT_MESSAGE);
+    unsafe { yl_disconnect(a.0, at_a) };
+    std::thread::sleep(Duration::from_millis(300));
+
+    let ids = [id_of(&a.ticket()).to_string(), id_of(&b.ticket()).to_string()];
+    for line in a.drain_logs().into_iter().chain(b.drain_logs()) {
+        for id in &ids {
+            assert!(!line.contains(id.as_str()), "log line has a full endpoint ID: {line}");
+        }
+    }
+}
+
 #[test]
 fn bad_input_is_rejected() {
     let a = Handle::new(LOCAL_CONFIG);

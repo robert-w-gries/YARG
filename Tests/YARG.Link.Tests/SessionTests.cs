@@ -254,6 +254,8 @@ namespace YARG.Link.Tests
             PumpUntil(() => a.Disconnects.Count == 1 && b.Disconnects.Count == 1);
             Assert.That(a.Disconnects[0].Reason, Is.EqualTo("left the session"));
             Assert.That(a.Disconnects[0].Code, Is.EqualTo(ByeCodes.LEFT));
+            // Its invite code is gone with it, so there's no point trying again
+            Assert.That(a.Disconnects[0].CanRetry, Is.False);
             Assert.That(a.Session.Members, Is.Empty);
             Assert.That(a.Session.IsConnected, Is.False);
         }
@@ -424,6 +426,93 @@ namespace YARG.Link.Tests
             PumpUntil(() => left.Count == 1);
             Assert.That(left[0].ConnectionLost, Is.False);
             Assert.That(left[0].LeftReason, Is.EqualTo("left the session"));
+        }
+    
+        [Test]
+        public void KickedMemberComingBackAsThemselvesIsRefusedWithoutAHello()
+        {
+            var (host, a, b) = ThreeMembers();
+            host.Session.Kick(host.Session.Members.Single(m => m.Name == "A"));
+            PumpUntil(() => a.Disconnects.Count == 1 && host.HasMembers("B"));
+
+            // A modified game would just try again, from the same endpoint
+            a.Session.Join(host.Session.LocalTicket);
+            PumpUntil(() => a.Disconnects.Count == 2);
+            Assert.That(a.Disconnects[1].Code, Is.EqualTo(ByeCodes.KICKED));
+            Assert.That(a.Log.Count(l => l.StartsWith("Link: joined ")), Is.EqualTo(1), "no second hello from the host");
+            Assert.That(a.Session.Members, Is.Empty);
+            Assert.That(host.HasMembers("B"), Is.True);
+
+            // Someone else still gets in
+            var c = Add(LinkRole.Join, "C");
+            c.Session.Join(host.Session.LocalTicket);
+            PumpUntil(() => host.HasMembers("B", "C"));
+        }
+
+        [Test]
+        public void HostSaysNothingToAPeerWithoutAValidHello()
+        {
+            var host = Add(LinkRole.Host, "Host", configure: o => o.HelloTimeoutSeconds = 1);
+            var silent = NewTransport();
+            var wrong = NewTransport();
+            try
+            {
+                var silentPeer = silent.Connect(host.Session.LocalTicket);
+                var wrongPeer = wrong.Connect(host.Session.LocalTicket);
+
+                var received = new List<LinkMessage>();
+                bool silentDropped = false, wrongDropped = false;
+                PumpUntil(() =>
+                {
+                    while (silent.TryPoll(out var ev))
+                    {
+                        if (ev.Type == LinkEventType.Message) received.Add(LinkProtocol.Decode(ev.Data));
+                        if (ev.Type == LinkEventType.PeerDisconnected) silentDropped = true;
+                    }
+                    while (wrong.TryPoll(out var ev))
+                    {
+                        if (ev.Type == LinkEventType.PeerConnected)
+                        {
+                            var hello = new HelloMessage { Protocol = LinkProtocol.VERSION + 100, Game = "test", Member = "x" };
+                            wrong.Send(wrongPeer, LinkProtocol.Encode(hello), Delivery.Reliable);
+                        }
+                        if (ev.Type == LinkEventType.Message) received.Add(LinkProtocol.Decode(ev.Data));
+                        if (ev.Type == LinkEventType.PeerDisconnected) wrongDropped = true;
+                    }
+                    return silentDropped && wrongDropped;
+                }, timeoutSeconds: 10);
+
+                // The one with the wrong protocol is told why, and nothing else; the silent one hears nothing
+                Assert.That(received.OfType<HelloMessage>(), Is.Empty);
+                Assert.That(received.Select(m => m.GetType()), Is.EqualTo(new[] { typeof(ByeMessage) }));
+                Assert.That(silentPeer, Is.Not.EqualTo(default(PeerId)));
+            }
+            finally
+            {
+                silent.Dispose();
+                wrong.Dispose();
+            }
+        }
+
+        [Test]
+        public void LogsDoNotContainTickets()
+        {
+            var (host, a, b) = ThreeMembers();
+            host.Session.Kick(host.Session.Members.Single(m => m.Name == "B"));
+            PumpUntil(() => b.Disconnects.Count == 1);
+            Assert.Throws<FormatException>(() => a.Session.Join("hunter2-not-a-ticket"));
+
+            string ticket = host.Session.LocalTicket;
+            string id = ticket.Split('@')[0];
+            foreach (var m in _all)
+            {
+                foreach (var line in m.Log)
+                {
+                    Assert.That(line, Does.Not.Contain(id), $"{m.Session.LocalName} logged the ticket");
+                    Assert.That(line, Does.Not.Contain("hunter2"));
+                }
+            }
+            Assert.That(LinkSession.ShortTicket(ticket), Has.Length.EqualTo(11));
         }
     }
 }

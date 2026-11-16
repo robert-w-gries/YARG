@@ -169,5 +169,16 @@ namespace YARG.Integration.Link.Transport
         bool TryPoll(out LinkEvent ev);
 
         PeerStats GetStats(PeerId peer);
+
+        /// <summary>
+        /// Who is on the other end of a connection, as the transport knows them: for the native transport, the
+        /// peer's endpoint ID, which its handshake authenticates. Available from
+        /// <see cref="LinkEventType.PeerConnected"/> until the disconnect; <c>null</c> otherwise.
+        /// </summary>
+        /// <remarks>
+        /// Endpoint IDs are free to make, so this only recognises a peer that keeps the same one. Games make a new
+        /// one for every session, so it's no use for recognising anyone across sessions either.
+        /// </remarks>
+        string GetPeerIdentity(PeerId peer);
     }
 }

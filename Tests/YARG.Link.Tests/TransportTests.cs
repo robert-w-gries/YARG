@@ -298,6 +298,54 @@ namespace YARG.Link.Tests
             var a = Transport();
             Assert.Throws<FormatException>(() => a.Connect("definitely not a ticket"));
             Assert.Throws<FormatException>(() => a.Connect(""));
+
+            // The error doesn't repeat what was passed, which may be anything from the clipboard
+            var e = Assert.Throws<FormatException>(() => a.Connect("hunter2-secret-password"));
+            Assert.That(e.Message, Does.Not.Contain("hunter2"));
+            var e2 = Assert.Throws<FormatException>(() => a.Connect("loopback:hunter2"));
+            Assert.That(e2.Message, Does.Not.Contain("hunter2"));
+        }
+
+        [Test]
+        public void PeerIdentityIsKnownWhileConnected()
+        {
+            var (a, b) = (Transport(), Transport());
+            var (atA, atB) = Pair(a, b);
+
+            string bAtA = a.GetPeerIdentity(atA);
+            string aAtB = b.GetPeerIdentity(atB);
+            Assert.That(bAtA, Is.Not.Null.And.Not.Empty);
+            Assert.That(aAtB, Is.Not.Null.And.Not.EqualTo(bAtA));
+            if (_kind == "native")
+            {
+                // The endpoint ID, which is what the ticket starts with
+                Assert.That(b.LocalTicket, Does.StartWith(bAtA + "@"));
+                Assert.That(a.LocalTicket, Does.StartWith(aAtB + "@"));
+            }
+
+            // The same transport has the same identity on every connection
+            a.Disconnect(atA);
+            WaitFor(b, e => e.Type == LinkEventType.PeerDisconnected && e.Peer == atB);
+            Assert.That(a.GetPeerIdentity(atA), Is.Null);
+            var (_, again) = Pair(a, b);
+            Assert.That(b.GetPeerIdentity(again), Is.EqualTo(aAtB));
+            Assert.That(b.GetPeerIdentity(new PeerId(9999)), Is.Null);
+        }
+
+        [Test]
+        public void EveryTransportHasANewIdentity()
+        {
+            // So an invite code dies with its session, and a host can't recognise a joiner next time
+            var host = Transport();
+            var first = Transport(accept: false);
+            var (_, firstPeer) = Pair(first, host);
+            var firstAtHost = host.GetPeerIdentity(firstPeer);
+
+            var second = Transport(accept: false);
+            var (_, secondAtHost) = Pair(second, host);
+            Assert.That(host.GetPeerIdentity(secondAtHost), Is.Not.EqualTo(firstAtHost));
+
+            Assert.That(Transport().LocalTicket, Is.Not.EqualTo(host.LocalTicket));
         }
     }
 }
