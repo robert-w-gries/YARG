@@ -14,7 +14,7 @@ namespace YARG.Integration.Link
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Each game mirrors its friends by replaying their inputs about 150 ms late, so if every game ran its own
+    /// Each game mirrors its friends by replaying their inputs a network delay late, so if every game ran its own
     /// meter for the whole band, fails and saves would happen at slightly different moments and the games would
     /// disagree. Instead, on the host friends' mirrored players join the main <see cref="EngineManager"/>
     /// (<see cref="RemoteInputFeed.InHostBand"/>), so its fail meter works like local multiplayer. The host

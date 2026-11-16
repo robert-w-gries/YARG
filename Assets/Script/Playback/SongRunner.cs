@@ -428,6 +428,22 @@ namespace YARG.Playback
         }
 
         /// <summary>
+        /// Moves the gameplay timeline by a small amount without seeking. Audio follows through the normal
+        /// sync correction, so keep each step small (well under a frame) and spread a larger change over time.
+        /// </summary>
+        /// <remarks>Used to keep online friends' songs in step. Ignored while paused or not yet started.</remarks>
+        public void ShiftInputTime(double seconds)
+        {
+            if (!Started || Paused || seconds == 0 || double.IsNaN(seconds))
+            {
+                return;
+            }
+
+            _anchorInputTime += seconds;
+            InputTimeOffset = _anchorInputSystemTime - (_anchorInputTime / SongSpeed);
+        }
+
+        /// <summary>
         /// Converts gameplay song time to a position in the audio file.
         /// </summary>
         public double GetAudioPlaybackTime(double songTime)
