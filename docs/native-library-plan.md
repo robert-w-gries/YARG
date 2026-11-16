@@ -458,7 +458,23 @@ the song, and the host's no fail setting is the one that counts.
   their owner, so star power used right around a fail or revive can count as a revive on one game and as
   plain star power on another. Fails, saves and scores stay with the host and each player's own game;
   only a mirrored highway's star power display can be briefly wrong.
-- **Vocals and pro guitar players aren't in the host's meter**, because they can't be mirrored yet.
+- **Vocals and pro guitar players aren't mirrored.** Their `setup` entry has no replay frame (`frame: -1`,
+  from `LinkController.CanMirror`), so friends' games make no highway or engine for them. They still show in
+  the lobby and play normally on their own game. The reasons differ:
+  - *Pro guitar* has no replay support in YARG.Core: `ReplayFrame` can't serialize its engine parameters
+    and stats ("Stat creation not implemented"). Fixing it is a Core change, so it's a follow-up for the
+    maintainers.
+  - *Vocals* can be serialized; the limit is in YARG. Every vocalist shares one `VocalTrack`, which
+    `GameManager.Loading` sets up from the local vocalists (harmony parts included). `CreateRemotePlayers`
+    only adds separate `TrackPlayer` highways afterwards, and skips vocals. Mirroring them means adding
+    remote singers to the shared track and assigning harmony parts across games. No Core change is needed.
+
+  What happens to the band meter depends on whose game the player is on:
+  - **On a client**, the host has no engine for them, so they aren't in the band's meter. They can't fail
+    the band, and their star power can't save it. The client's own meter runs with fail off, so for them
+    it's effectively no fail.
+  - **On the host**, they're local to the host's main `EngineManager`, so they do count: they can fail
+    the band and save it, although no friend can see their track.
 - **If the host drops mid-song, clients' meters stop updating** and the song can no longer fail for them.
 - **The crowd and venue follow each game's own meter**, not the band's, on clients.
 
@@ -470,3 +486,5 @@ the song, and the host's no fail setting is the one that counts.
 4. Which minimum macOS version does YARG target?
 5. Would maintainers accept a YARG.Core option to register an engine for the fail meter only? It would
    remove the star power score drift described under known limitations.
+6. Should the host's vocalists and pro guitarists count toward the band meter while friends can't see
+   them? Today a client's can't fail the band and the host's can.
