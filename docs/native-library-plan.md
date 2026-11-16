@@ -90,6 +90,75 @@ bindings are Python, Swift and Kotlin. A C# replacement (for example
 LiteNetLib plus our own STUN, relay and encryption) is a lot more work for a
 worse result.
 
+## Compared with the server-based fork
+
+The [`asimard1/YARG` `feature/merged-multiplayer`](https://github.com/asimard1/YARG/tree/feature/merged-multiplayer)
+branch takes the other approach (open question 1). It has a central ASP.NET lobby service at
+`lobbies.yarg.online` (REST plus SignalR over WebSockets, with JWT auth) and a dedicated LiteNetLib UDP
+game server. All gameplay traffic goes through that server, which fans each message out to the other
+players (`Assets/Script/Online/GameClientSession.cs`, `LobbyGameOrchestrator.cs`). Besides hole
+punching, encryption, relays and invite codes (above), iroh gives us these benefits over it. They are
+worth repeating in the MVP write-up.
+
+**Latency and path**
+
+- **One hop instead of two.** Their inputs go client → game server → client. A direct iroh connection
+  goes straight to the friend. That matters because mirrors already run about 150 ms behind their owner.
+- **LAN play stays on the LAN.** iroh finds local addresses and uses them. Their stack sends two players
+  in the same house out to the internet server and back. A ticket that carries addresses also works with
+  no internet access.
+- **It keeps choosing the best path.** iroh tries IPv4 and IPv6 addresses at the same time and switches
+  between relay and direct paths as conditions change. Their client uses the first DNS result for the
+  game server only (`LobbyGameOrchestrator.ParseEndpoint`).
+- **Network changes don't drop the session.** QUIC moves the connection to the new address when a laptop
+  changes Wi-Fi or a hotspot changes IP. A LiteNetLib peer is tied to one IP and port.
+
+**Reachability**
+
+- **Networks that block UDP.** LiteNetLib only speaks UDP, so school, hotel and corporate networks that
+  block it can't play. iroh's relay falls back to HTTPS/WebSocket on port 443.
+
+**Security**
+
+- **Their game token is sent unencrypted.** `GameClientSession.ConnectAsync` writes the JWT into
+  LiteNetLib's connection request, and LiteNetLib doesn't encrypt anything. Anyone on the network path can
+  read the token and reuse it until it expires, and can read or forge game packets. Only their lobby
+  traffic has TLS. Every byte we send runs over QUIC with TLS 1.3, and the handshake proves each peer's
+  endpoint ID, which is why a kick by endpoint ID can't be spoofed.
+- **No accounts or tokens.** They need an auth service (a dev-auth stub today, in
+  `OnlineAccessTokenProvider.cs`) and per-game tokens with expiry. We need neither.
+
+**Operations and longevity**
+
+- **Servers are a fallback, not a requirement.** Their game only works while the lobby service and game
+  servers are up and someone pays for them, and load grows with every concurrent game. Our relay only
+  carries traffic when hole punching fails. If it goes down, direct connections keep working, and anyone
+  can run `iroh-relay`.
+- **Simpler for upstream to accept.** Maintainers don't take on a backend to run, secure and moderate
+  (their branch includes lobby chat, which needs moderation on the server).
+- **Testing without servers.** `cargo test` and the C# tests run two endpoints over localhost. Theirs
+  needs the lobby service running.
+
+**Transport features**
+
+- **No head-of-line blocking.** Every one of their sends is `ReliableOrdered`, including high-rate whammy
+  and vocal pitch samples, so one lost packet holds up everything behind it, note misses included.
+  LiteNetLib has sequenced and unreliable modes, so this is partly how they use it, but QUIC datagrams
+  and separate streams make the right choice easy. We already send unreliable messages as datagrams.
+- **Congestion control and connection stats** (RTT, path type) come built in, with no tuning like their
+  15 s `DisconnectTimeout` to survive GC pauses.
+
+**Where their approach is stronger**
+
+- **Lobby discovery.** A server can list public lobbies. P2P needs some directory for that (see
+  [Future network features](#future-network-features)).
+- **Host drop and cheating.** A neutral authoritative server survives any one player leaving and can
+  check results. Our "host drops mid-song" limitation doesn't exist for them (host migration in
+  [Phase 5](#phase-5-after-mvp) would remove it).
+- **IP privacy.** Direct connections show each player's IP address to the others. Theirs only show it to
+  the server.
+- **No second language.** It's pure C#, with no Rust toolchain (open question 2).
+
 ## Architecture
 
 ### Responsibilities
@@ -543,7 +612,32 @@ Security review: admission and identity (2026-11-15):
   address lookup decision (see [Relays and address lookup](#relays-and-address-lookup)).
 - [ ] Relay abuse protection: per-client rate limit, shared relay token in the client, and usage
   monitoring (see [Abuse protection](#abuse-protection)).
+- [ ] Rejoin after a drop: a dropped player reconnects with the same ticket, and the host sends the song
+  position and current state. The host keeps the dropped player's slot for a short time and recognises
+  them by endpoint ID (endpoint IDs are per session, so this only works within the same session).
+- [ ] Host migration: when the host leaves, the next member in roster order becomes host and the others
+  reconnect to it. Removes the "host drops mid-song" limitation. Every member needs the meter state, which
+  the host already sends about ten times a second.
 - [ ] Reshape history and open the upstream PR.
+- [ ] Pick from [Future network features](#future-network-features) once the MVP is reviewed.
+
+## Future network features
+
+None of these are needed for the MVP. They are listed to show what the iroh endpoint makes cheap. A
+feature that only needs messages fits the existing pipe: the session layer adds a message kind, and the
+native library doesn't change. A feature that needs a separate iroh protocol (such as iroh-blobs) runs
+on the same endpoint under its own ALPN, so it reuses the same hole-punched paths, relays and
+encryption, but it does add functions to the C interface.
+
+| Feature | How | Notes |
+|---|---|---|
+| **Lobby and in-song chat** | New reliable message kind on the existing stream. The host relays chat to the lobby, like roster updates. | No server to moderate: mute and block are local, keyed by the sender's authenticated endpoint ID. Keep a length limit and a rate limit per peer. |
+| **Official song sharing** | [iroh-blobs](https://github.com/n0-computer/iroh-blobs) on the same endpoint. **Only official YARG songs** (the setlists the YARC Launcher installs, found through `PathHelper.SetlistPath`) can be shared. A player who is missing one fetches its files from the host or any member who has it, as a BLAKE3-hashed collection. | **Nothing else is ever offered or accepted:** no custom songs, no songs from the player's own song folders, and no files added to the setlist folder by hand. A file being in the setlist folder isn't enough, because anyone can copy files there and a modified client can claim anything. Both sides check each collection against a list of official song hashes that the game trusts, not one the sender provides. The sender only offers songs on the list, and the receiver refuses any request or download that isn't on it before saving anything. Downloads are checked against the hash as they arrive and can resume. It also helps players who skipped a setlist in the launcher. Audio is tens of MB, so it needs a progress UI and an accept on the receiving side. Check that an iroh-blobs release supports our iroh version (1.4.1). See open question 7. |
+| **Replay and score sharing** | iroh-blobs, or a reliable message for small replays. After a song, each player's replay file is offered to the others. | Lets the score screen open friends' replays. Reuses YARG's replay format. |
+| **LAN lobby list** | iroh's local network (mDNS) address lookup. Games on the same network advertise open lobbies. | Join with no invite code and no internet. Off by default (it announces the game on the network). |
+| **Public lobby directory** | A small directory that lists open lobbies by ticket, or publishing lobby records through pkarr/DNS. | Covers the lobby browser that a server-based design gets for free. The directory only stores tickets; game traffic still goes peer to peer. |
+| **Spectators** | Joiners that send no inputs and get mirrors of every player. For many spectators, fan out with iroh-gossip instead of the host sending to each one. | Spectators already fit the roster model as players with no track. |
+| **Voice chat** | Opus frames as unreliable datagrams. | Easy on the network side; the hard parts are audio capture, echo cancellation and mixing with the song, so it's the lowest priority. |
 
 ## Band fail meter
 
@@ -609,6 +703,7 @@ the song, and the host's no fail setting is the one that counts.
 ## Open questions
 
 1. Do maintainers have a preferred direction for online play (P2P like ours or server-based like the `asimard1` fork)?
+   See [Compared with the server-based fork](#compared-with-the-server-based-fork).
 2. Will maintainers accept Rust in the native build, or do they want a different language or approach?
 3. Is the lobby host-authoritative (the host runs the coordinator, as today), or does any member coordinate?
 4. Which minimum macOS version does YARG target?
@@ -616,3 +711,6 @@ the song, and the host's no fail setting is the one that counts.
    remove the star power score drift described under known limitations.
 6. Should the host's vocalists and pro guitarists count toward the band meter while friends can't see
    them? Today a client's can't fail the band and the host's can.
+7. For official song sharing, where does the trusted list of official song hashes come from (for example, a
+   manifest published with the official setlists), and do maintainers want peer-to-peer sharing of official
+   songs at all, or should a missing song send the player to the launcher instead?
