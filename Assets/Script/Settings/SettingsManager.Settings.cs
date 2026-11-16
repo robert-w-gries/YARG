@@ -169,6 +169,14 @@ namespace YARG.Settings
             /// </summary>
             public static bool IsInitialized = false;
 
+            /// <summary>True while <see cref="SettingsManager.LoadSettings"/> applies the loaded values.</summary>
+            public static bool IsApplyingLoadedSettings = false;
+
+            /// <summary>
+            /// The command line's window arguments win over the saved display settings at startup.
+            /// </summary>
+            private static bool KeepCommandLineScreen => IsApplyingLoadedSettings && CommandLineArgs.ScreenFromCommandLine;
+
             #region Hidden Settings
 
             public List<string> SongFolders = new();
@@ -1107,7 +1115,7 @@ namespace YARG.Settings
             private static void FullscreenModeCallback(FullScreenMode value)
             {
                 // Unity saves this information automatically
-                if (!IsInitialized)
+                if (!IsInitialized || KeepCommandLineScreen)
                 {
                     return;
                 }
@@ -1132,7 +1140,7 @@ namespace YARG.Settings
             private static void ResolutionCallback(Resolution? value)
             {
                 // Unity saves this information automatically
-                if (!IsInitialized)
+                if (!IsInitialized || KeepCommandLineScreen)
                 {
                     return;
                 }

@@ -375,17 +375,25 @@ namespace YARG.Settings
             SettingContainer.IsInitialized = true;
 
             // Now that we're done loading, call all of the callbacks
-            var fields = typeof(SettingContainer).GetProperties();
-            foreach (var field in fields)
+            SettingContainer.IsApplyingLoadedSettings = true;
+            try
             {
-                var value = field.GetValue(Settings);
-
-                if (value is not ISettingType settingType)
+                var fields = typeof(SettingContainer).GetProperties();
+                foreach (var field in fields)
                 {
-                    continue;
-                }
+                    var value = field.GetValue(Settings);
 
-                settingType.ForceInvokeCallback();
+                    if (value is not ISettingType settingType)
+                    {
+                        continue;
+                    }
+
+                    settingType.ForceInvokeCallback();
+                }
+            }
+            finally
+            {
+                SettingContainer.IsApplyingLoadedSettings = false;
             }
         }
 

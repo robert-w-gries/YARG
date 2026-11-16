@@ -67,7 +67,20 @@ namespace YARG
         /// </summary>
         private const string LINK_LAN_ARG = "-link-lan";
 
+        /// <summary>
+        /// Unity's own window arguments. When any of these is given, the launch command decides the window, so
+        /// the saved Fullscreen Mode and Resolution settings aren't applied at startup (they still apply when
+        /// changed in the settings menu).
+        /// </summary>
+        private static readonly string[] SCREEN_ARGS =
+        {
+            "-screen-fullscreen", "-screen-width", "-screen-height", "-window-mode", "-popupwindow",
+        };
+
         public static bool Offline { get; private set; }
+
+        /// <summary>Whether the window was set up on the command line (see <see cref="SCREEN_ARGS"/>).</summary>
+        public static bool ScreenFromCommandLine { get; private set; }
 
         public static bool VerboseReplays { get; private set; }
 
@@ -91,6 +104,11 @@ namespace YARG
             // Remember, the first argument is always the application itself
             for (int i = 1; i < args.Length; i++)
             {
+                if (Array.IndexOf(SCREEN_ARGS, args[i]) >= 0)
+                {
+                    ScreenFromCommandLine = true;
+                }
+
                 switch (args[i])
                 {
                     case OFFLINE_ARG:
