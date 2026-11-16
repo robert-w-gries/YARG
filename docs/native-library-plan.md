@@ -167,6 +167,123 @@ Follow the existing YargAudio pattern (`.github/workflows/native-audio.yml`,
 The CI workflow `native-link.yml` copies `native-audio.yml`. `scripts/NativeBuild`
 gains a `cargo` backend so maintainers keep a single build entry point.
 
+## Relays and address lookup
+
+**Decision (2026-11-16):** use n0's public relays through the MVP and cross-device testing. Before a
+public release, run our own relay and keep n0's public relays as a fallback.
+
+### Where n0 infrastructure is used today
+
+- **Relays:** `RelayMode::Default` (`Native/YargLink/src/node.rs`) uses n0's public relays. A relay
+  only carries traffic when hole punching fails (`PATH_RELAY` in the stats). Relayed traffic stays
+  end-to-end encrypted.
+- **Address lookup:** `presets::N0` also uses n0's DNS/pkarr service, which is how a bare endpoint ID
+  ticket becomes reachable addresses. Tickets that carry `@addr,addr,relay-url` work without it.
+
+### Why not rely on the public relays for release
+
+- n0 says the public relays are for development and testing, not production. They are free,
+  rate-limited, and come with no uptime or performance guarantees.
+- n0 can upgrade or change them at any time. We pin iroh (1.4.1), so a relay-side change could break
+  players with no change on our side.
+- Bandwidth isn't the concern. Relayed sessions carry hellos, roster and state messages, a song setup
+  at song start, and input streams for a few players. That should be kilobytes per second per session
+  (not yet measured).
+
+### Options for release
+
+| Option | Cost | Notes |
+|---|---|---|
+| Self-hosted `iroh-relay` | One small VPS per region | Open source. Needs a domain and TLS (built-in ACME), with TCP 80/443 open and UDP 7842 for QUIC address discovery. |
+| n0 shared relays (Pro plan) | Subscription | Multi-tenant, 5 MB/s rate limit, 100 GB egress/month, 10,000 concurrent connections, API-key auth. |
+| n0 dedicated relays | About $199/month per region on top of Pro (check current pricing) | Single-tenant, no shared rate limits. |
+
+### Release work
+
+- Switch to `RelayMode::Custom` with our relay(s) first and n0's public relays after them in the relay
+  map. Start with one region; add NA/EU/Asia if relayed latency needs it.
+- Make relay URLs configurable (setting or command-line argument) so forks and self-builders can
+  point at their own.
+- Decide on address lookup: self-host `iroh-dns-server`, keep n0's DNS, or rely on full-address
+  tickets.
+- Add the abuse protection below (per-client rate limit, shared token, monitoring).
+- Measure relayed bandwidth per session to size the VPS and the rate limit.
+
+### Self-hosting cost estimate
+
+Estimated 2026-11-16 for 25–50 users a month. The traffic figures are guesses until relayed
+bandwidth is measured.
+
+- **Traffic:** 50 users × ~10 hours a month = 500 user-hours. At a generous 20 KB/s per user, counted
+  in and out of the relay, that's ~150 MB per relayed user-hour. If every connection were relayed,
+  that's ~75 GB a month. With hole punching succeeding most of the time (10–30% relayed), it's more
+  like 5–25 GB. Entry-level VPS plans include 1–20 TB, so bandwidth isn't what decides the cost.
+- **CPU and memory:** `iroh-relay` is one Rust binary. 1 vCPU and 512 MB–1 GB of RAM is plenty.
+
+| Item | Option | Approx. cost |
+|---|---|---|
+| VPS, one region | Hetzner CX22 (20 TB transfer in the EU, less at US locations) | ~$4–5/month |
+| | DigitalOcean / Vultr / Linode basic tier (0.5–1 TB) | $4–6/month |
+| | Oracle Cloud Always Free (ARM) | $0, but accounts sometimes get reclaimed, so it isn't reliable enough for a release |
+| Domain | Needed for TLS, or use a subdomain of one we already own | ~$10–15/year, or $0 |
+| TLS | `iroh-relay`'s built-in ACME (Let's Encrypt) | $0 |
+| `iroh-dns-server` (optional) | Can share the same VPS | $0 extra |
+
+- **Total:** about $4–7 a month plus the domain, so roughly $60–100 a year. n0's dedicated relays
+  (~$199 a month per region) cost 30–50× that for no benefit at this scale. Check current prices
+  before choosing; several providers raised prices in 2025.
+- **Time:** 1–2 hours to set up (DNS record, ports, systemd unit, config). After that, OS updates and
+  upgrading `iroh-relay` to match our pinned iroh version.
+- **More regions:** NA, EU and Asia together would be about $15–20 a month. Only worth it if players
+  report high latency on relayed connections.
+- **Downtime:** clients fall back to n0's public relays, so an outage doesn't stop people playing.
+
+### Abuse protection
+
+Relayed traffic is end-to-end encrypted and the client is open source, so the relay can't see what's
+sent and can't truly tell YARG from other clients. Any token we ship can be extracted. The goal is to
+make the relay useless for anything other than the game, and to put a ceiling on what abuse can cost us.
+All of the settings below exist in `iroh-relay` 1.4.1.
+
+1. **Per-client rate limit (most important).** Game traffic is a few KB/s. A cap a few times the
+   game's peak makes the relay useless for file transfer, video or proxying. Text messages sent
+   through it would still get through, but they cost us nothing.
+   ```toml
+   [limits.client.rx]
+   bytes_per_second = 100000   # placeholder: set from measurements
+   max_burst_bytes  = 500000
+   ```
+   Size it for the **host**: joiners only connect to the host, so a relayed host carries the roster and
+   every joiner's inputs. Measure a full session with the most players first. `limits.accept_conn_limit`
+   and `accept_conn_burst` also limit how fast new connections are accepted.
+2. **Shared token.** Stops other iroh apps and scanners from using our relay as a free public relay,
+   which is the most likely misuse. Server: `access.shared_token = ["..."]` (or the
+   `IROH_RELAY_ACCESS_TOKEN` environment variable). Client: `RelayConfig::with_auth_token(...)` on our
+   entry in the `RelayMode::Custom` map. It only stops casual use, because anyone can read it. Make it
+   a build or config value next to the relay URL so forks can set their own, and change it between
+   releases if it gets copied. Not implemented yet: `node.rs` only uses `RelayMode::Default` or
+   `Disabled`.
+3. **HTTP access check (only if misuse shows up).** `access.http = { url = "...", bearer_token = "..." }`
+   asks our own service about each endpoint ID that connects. A `200` with `true` lets it in. That
+   gives a denylist and kill switch we can change without restarting the relay. It can't check that a
+   client is really YARG, and every handle gets a fresh endpoint ID, so bans are weak. Real gating
+   would need something like signing in with Discord to get a short-lived pass, which is overkill at
+   this scale.
+4. **Limit the bill and watch usage.** Use a host with a lot of included transfer and cheap overage,
+   and turn on billing alerts. Set `metrics_addr` and watch relayed bytes: a jump with no rise in play
+   time means misuse. Logs show which endpoint IDs connect, for a denylist. Open only TCP 80/443 and
+   UDP 7842.
+5. **Legal.** The relay forwards encrypted packets and stores nothing. A short acceptable-use note and
+   an abuse contact on the relay's domain covers abuse reports.
+
+Plan: do 1, 2 and 4 when the relay launches, and add 3 only if the metrics show misuse.
+
+Sources: iroh docs on [relays](https://docs.iroh.computer/concepts/relays),
+[rate limiting](https://docs.iroh.computer/relays/rate-limiting),
+[adding a relay](https://docs.iroh.computer/add-a-relay),
+[shared relays](https://docs.iroh.computer/iroh-services/relays/shared) and
+[managed relays](https://docs.iroh.computer/iroh-services/relays/managed).
+
 ## Risks and mitigations
 
 | Risk | Mitigation |
@@ -181,6 +298,7 @@ gains a `cargo` backend so maintainers keep a single build entry point.
 | **Binary size** (iroh + tokio + rustls) | `opt-level="s"`, `lto="fat"`, `strip=true`, `panic="unwind"`, iroh default features trimmed. Measure early; expect several MB per platform, about double for the macOS universal file. |
 | **Version mismatch between friends** | Version handshake on connect: protocol version plus game build. Refuse incompatible peers with a clear message. |
 | **Discord Game SDK is deprecated** | Check that Activity join/invite still works in the bundled `DiscordGameSDK`. The long-term path is Discord's Social SDK. Keep Discord glue isolated so invites also work through a plain copyable ticket. |
+| **n0's public relays aren't meant for production** (rate-limited, no uptime guarantee, can change at any time) | Fine for the MVP. Before release, run our own relay with n0's as a fallback; see [Relays and address lookup](#relays-and-address-lookup). |
 | **Song matching across machines** | Today we match on exact `SongEntry.Hash`. Look at soft-hash matching (see the overlapping work above) for charts that differ trivially. |
 
 ## Branch strategy (YARG fork)
@@ -421,6 +539,10 @@ Security review: admission and identity (2026-11-15):
 - [ ] Discord invite/"Ask to Join" through the bundled SDK.
 - [ ] Soft-hash song matching.
 - [ ] Data Stream relay inside the game (if still wanted).
+- [ ] Self-hosted iroh relay with n0's public relays as a fallback, plus configurable relay URLs and an
+  address lookup decision (see [Relays and address lookup](#relays-and-address-lookup)).
+- [ ] Relay abuse protection: per-client rate limit, shared relay token in the client, and usage
+  monitoring (see [Abuse protection](#abuse-protection)).
 - [ ] Reshape history and open the upstream PR.
 
 ## Band fail meter
