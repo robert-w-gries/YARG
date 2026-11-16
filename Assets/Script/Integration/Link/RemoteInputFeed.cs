@@ -11,31 +11,12 @@ namespace YARG.Integration.Link
     /// <remarks>
     /// The friend's game sends its recorded inputs (the same ones it saves in replays) together with its
     /// current input time. Feeding those inputs to a local engine reproduces their performance exactly, like a
-    /// replay. The catch is that inputs arrive late, so playback runs a little behind the song: never past the
-    /// newest time the friend has reported, and with a delay that adapts to how late their data is arriving.
+    /// replay. The catch is that inputs arrive late. The friend's highway is still drawn in time with the song;
+    /// only their engine runs behind, as far as the inputs received so far allow, so their hits, misses and
+    /// combo show up a network delay late while the notes scroll on time.
     /// </remarks>
     public class RemoteInputFeed
     {
-        /// <summary>Delay used until the first data arrives.</summary>
-        private const double INITIAL_DELAY = 0.15;
-
-        /// <summary>Extra delay on top of the worst recent lateness, to absorb jitter.</summary>
-        private const double DELAY_MARGIN = 0.04;
-
-        private const double MIN_DELAY = 0.05;
-
-        /// <summary>Beyond this the friend has paused or is far out of sync; just follow them.</summary>
-        private const double MAX_DELAY = 30.0;
-
-        /// <summary>How fast the delay grows when data is late (0.5 = their track runs at half speed).</summary>
-        private const double DELAY_GROW_RATE = 0.5;
-
-        /// <summary>How fast the delay shrinks once data is on time again (0.1 = their track runs 10% fast).</summary>
-        private const double DELAY_SHRINK_RATE = 0.1;
-
-        /// <summary>How fast the remembered worst lateness decays, in seconds per second.</summary>
-        private const double PEAK_DECAY_RATE = 0.05;
-
         /// <summary>The feed counts as stalled after this long without data.</summary>
         public const double STALL_SECONDS = 3.0;
 
@@ -80,8 +61,21 @@ namespace YARG.Integration.Link
         /// <summary>When data last arrived, in <see cref="LinkController"/> clock seconds.</summary>
         public double LastReceived { get; private set; } = double.NegativeInfinity;
 
-        /// <summary>Current playback delay behind the song, in seconds.</summary>
-        public double Delay { get; private set; } = INITIAL_DELAY;
+        /// <summary>
+        /// How far behind the song the friend's engine was simulated on the last frame, in seconds: how late
+        /// their hits show up. Their newest data's lateness (network latency, send batching, and any difference
+        /// between our clocks), or 0 when it's ahead of us.
+        /// </summary>
+        public double Lag { get; private set; }
+
+        /// <summary>
+        /// How far behind our song the friend's newest data was on the last frame, in seconds. Negative when
+        /// their clock is ahead of ours.
+        /// </summary>
+        public double Lateness { get; private set; }
+
+        /// <summary>The most <see cref="Lag"/> since the last <see cref="TakeMaxLag"/>.</summary>
+        private double _maxLag;
 
         private readonly List<GameInput> _pending = new();
 
@@ -94,7 +88,6 @@ namespace YARG.Integration.Link
         // Every input up to this time has been received.
         private double _watermark = double.NegativeInfinity;
 
-        private double _peakLateness;
         private double _lastPlaybackTime = double.NegativeInfinity;
 
         public RemoteInputFeed(string member, int index, string name, string instrument, string difficulty,
@@ -167,10 +160,12 @@ namespace YARG.Integration.Link
         /// Work out the input time the mirrored player should be simulated at this frame.
         /// </summary>
         /// <param name="localInputTime">Our own <c>GameManager.InputTime</c>.</param>
-        /// <param name="deltaTime">Frame time, for smoothing the delay.</param>
-        /// <param name="playbackTime">Input time to update the mirrored engine to; never decreases.</param>
+        /// <param name="playbackTime">
+        /// Input time to update the mirrored engine to: as close to ours as the received inputs allow, so it
+        /// never misses a note whose input is still in flight. Never decreases.
+        /// </param>
         /// <returns><c>false</c> if nothing has been received yet.</returns>
-        public bool TryGetPlaybackTime(double localInputTime, double deltaTime, out double playbackTime)
+        public bool TryGetPlaybackTime(double localInputTime, out double playbackTime)
         {
             if (!HasData)
             {
@@ -178,20 +173,23 @@ namespace YARG.Integration.Link
                 return false;
             }
 
-            // How far behind us the friend's data is right now
-            double lateness = localInputTime - _watermark;
-            _peakLateness = Math.Max(lateness, _peakLateness - PEAK_DECAY_RATE * deltaTime);
+            Lateness = localInputTime - _watermark;
 
-            double target = Math.Clamp(_peakLateness + DELAY_MARGIN, MIN_DELAY, MAX_DELAY);
-            Delay = target > Delay
-                ? Math.Min(target, Delay + DELAY_GROW_RATE * deltaTime)
-                : Math.Max(target, Delay - DELAY_SHRINK_RATE * deltaTime);
-
-            // Never simulate past what we've received, and never go backwards
-            playbackTime = Math.Min(localInputTime - Delay, _watermark);
+            // Never simulate past what we've received (or past now), and never go backwards
+            playbackTime = Math.Min(localInputTime, _watermark);
             playbackTime = Math.Max(playbackTime, _lastPlaybackTime);
             _lastPlaybackTime = playbackTime;
+            Lag = localInputTime - playbackTime;
+            _maxLag = Math.Max(_maxLag, Lag);
             return true;
+        }
+
+        /// <summary>The most <see cref="Lag"/> since this was last called, for diagnostics.</summary>
+        public double TakeMaxLag()
+        {
+            double max = _maxLag;
+            _maxLag = 0;
+            return max;
         }
     }
 }

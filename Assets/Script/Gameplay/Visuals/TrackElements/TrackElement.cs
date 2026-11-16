@@ -51,7 +51,7 @@ namespace YARG.Gameplay.Visuals
             var cacheTransform = transform;
             cacheTransform.localPosition = cacheTransform.localPosition.WithZ(z);
 
-            if (z < REMOVE_POINT - RemovePointOffset)
+            if (z < REMOVE_POINT - RemovePointOffset - Player.LateHitAllowance)
             {
                 ParentPool.Return(this);
                 return false;
