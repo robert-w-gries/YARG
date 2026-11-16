@@ -29,7 +29,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change to this header (or to what its functions promise). */
-#define YL_ABI_VERSION 2
+#define YL_ABI_VERSION 3
 
 /* The largest payload YL_CHANNEL_UNRELIABLE takes. Real paths often allow a little more. */
 #define YL_MAX_UNRELIABLE 1024
@@ -102,9 +102,6 @@ YL_API int yl_last_error(char *buf, size_t cap, size_t *len);
 /*
  * Open an endpoint. config_json is a JSON object (or NULL for the defaults) with these optional
  * members:
- *   "key_file"          path of the secret key, created if missing, so the endpoint ID (and so the
- *                       ticket) stays the same between runs. If another process holds the key, a
- *                       temporary one is used instead. Without it, every handle gets a new ID.
  *   "relay"             use n0's public relays (default true)
  *   "address_lookup"    publish/resolve addresses via n0's DNS, so bare endpoint IDs work as
  *                       tickets (default true)
@@ -124,6 +121,10 @@ YL_API int yl_last_error(char *buf, size_t cap, size_t *len);
  * them, or tens of megabytes) is disconnected; its datagrams are dropped instead.
  */
 YL_API int yl_create(const char *config_json, yl_handle **out);
+/*
+ * Every handle gets a new, random endpoint ID, and so a new ticket: a ticket stops working once its
+ * handle is destroyed, and peers can't recognise this game from one handle to the next.
+ */
 
 /* Close every connection, stop all threads and free the handle. NULL is ignored. */
 YL_API void yl_destroy(yl_handle *h);
@@ -154,6 +155,15 @@ YL_API int yl_send(yl_handle *h, uint32_t peer, uint8_t channel, const uint8_t *
  * with a bigger buffer). buf may be NULL when cap is 0.
  */
 YL_API int yl_poll(yl_handle *h, yl_event *ev, uint8_t *buf, size_t cap);
+
+/*
+ * The peer's endpoint ID (UTF-8, not null-terminated), the same text as the ID part of its ticket.
+ * It's authenticated by the connection's handshake, so a peer can't claim another's ID, but anyone
+ * can make a new one at will. *len receives the full length. Returns YL_ERR_INVALID_ARG (with *len
+ * set to 0) if the peer is unknown or its connection isn't up yet; it is available from
+ * YL_EVENT_PEER_CONNECTED until the peer disconnects.
+ */
+YL_API int yl_peer_id(yl_handle *h, uint32_t peer, char *buf, size_t cap, size_t *len);
 
 /* Statistics for a peer. Unknown or disconnected peers report connected = 0. */
 YL_API int yl_peer_stats(yl_handle *h, uint32_t peer, yl_stats *out);

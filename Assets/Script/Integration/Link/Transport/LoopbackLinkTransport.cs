@@ -22,8 +22,13 @@ namespace YARG.Integration.Link.Transport
     /// </para>
     /// <para>
     /// TCP frames are <c>[u32 length][u8 kind][payload]</c>, little-endian, where the length counts the kind
-    /// byte and payload. Kinds: hello (payload: u16 UDP port), data, ping and pong (payload: the sender's
-    /// clock as i64 ticks, echoed back to measure the round-trip time).
+    /// byte and payload. Kinds: hello (payload: u16 UDP port, then 16 random bytes identifying the transport),
+    /// data, ping and pong (payload: the sender's clock as i64 ticks, echoed back to measure the round-trip
+    /// time).
+    /// </para>
+    /// <para>
+    /// The hello's identity stands in for the native transport's endpoint ID, so that the session's bans can
+    /// be tested here. Unlike an endpoint ID it isn't authenticated: anyone can claim anyone's.
     /// </para>
     /// </remarks>
     public sealed class LoopbackLinkTransport : ILinkTransport
@@ -38,6 +43,8 @@ namespace YARG.Integration.Link.Transport
 
         private const int MAX_FRAME_SIZE = MAX_RELIABLE_SIZE + 1;
         private const int MAX_HELLO_FRAME_SIZE = 64;
+
+        private const int IDENTITY_SIZE = 16;
 
         private const byte FRAME_HELLO = 0;
         private const byte FRAME_DATA  = 1;
@@ -57,6 +64,9 @@ namespace YARG.Integration.Link.Transport
 
         private readonly bool _accept;
         private readonly int  _maxPeers;
+
+        /// <summary>Sent in our hello; see <see cref="GetPeerIdentity"/>.</summary>
+        private readonly byte[] _identity = NewIdentity();
 
         private int           _nextId;
         private volatile bool _disposed;
@@ -225,6 +235,9 @@ namespace YARG.Integration.Link.Transport
                 Interlocked.Read(ref connection.BytesReceived));
         }
 
+        public string GetPeerIdentity(PeerId peer) =>
+            _connections.TryGetValue(peer.Value, out var connection) && connection.Ready ? connection.Identity : null;
+
         public void Dispose()
         {
             if (_disposed) return;
@@ -258,6 +271,9 @@ namespace YARG.Integration.Link.Transport
 
             /// <summary>Set once the peer's hello arrived; only then is the connection reported.</summary>
             public volatile bool Ready;
+
+            /// <summary>What the peer's hello said it is (hex); set with <see cref="Ready"/>.</summary>
+            public volatile string Identity;
 
             /// <summary>Where the peer receives datagrams; set with <see cref="Ready"/>.</summary>
             public volatile IPEndPoint UdpEndpoint;
@@ -335,8 +351,9 @@ namespace YARG.Integration.Link.Transport
                 client.NoDelay = true;
                 connection.Stream = client.GetStream();
 
-                Span<byte> hello = stackalloc byte[2];
+                Span<byte> hello = stackalloc byte[2 + IDENTITY_SIZE];
                 BinaryPrimitives.WriteUInt16LittleEndian(hello, (ushort) UdpPort);
+                _identity.CopyTo(hello.Slice(2));
                 WriteFrame(connection, FRAME_HELLO, hello);
 
                 reason = ReadLoop(connection, client);
@@ -387,7 +404,7 @@ namespace YARG.Integration.Link.Transport
                 {
                     case FRAME_HELLO:
                     {
-                        if (connection.Ready || payload.Length < 2)
+                        if (connection.Ready || payload.Length < 2 + IDENTITY_SIZE)
                         {
                             return "bad hello";
                         }
@@ -395,6 +412,7 @@ namespace YARG.Integration.Link.Transport
                         int udpPort = BinaryPrimitives.ReadUInt16LittleEndian(payload);
                         var remote = (IPEndPoint) client.Client.RemoteEndPoint;
                         connection.UdpEndpoint = new IPEndPoint(remote.Address, udpPort);
+                        connection.Identity = ToHex(payload.Slice(2, IDENTITY_SIZE));
                         connection.Ready = true;
                         _events.Enqueue(LinkEvent.Connected(connection.Id));
                         break;
@@ -555,7 +573,8 @@ namespace YARG.Integration.Link.Transport
             int colon = rest.LastIndexOf(':');
             if (colon <= 0 || !int.TryParse(rest.Substring(colon + 1), out int port) || port is <= 0 or > 65535)
             {
-                throw new FormatException($"Not a loopback ticket (expected {TICKET_PREFIX}host:port): {ticket}");
+                // Not repeating the ticket: it may be anything from the clipboard, and errors get logged
+                throw new FormatException($"Not a loopback ticket (expected {TICKET_PREFIX}host:port)");
             }
 
             return (rest.Substring(0, colon), port);
@@ -577,6 +596,27 @@ namespace YARG.Integration.Link.Transport
             }
 
             throw new SocketException((int) SocketError.HostNotFound);
+        }
+
+        private static byte[] NewIdentity()
+        {
+            var identity = new byte[IDENTITY_SIZE];
+            using (var random = System.Security.Cryptography.RandomNumberGenerator.Create())
+            {
+                random.GetBytes(identity);
+            }
+            return identity;
+        }
+
+        private static string ToHex(ReadOnlySpan<byte> bytes)
+        {
+            var hex = new char[bytes.Length * 2];
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                hex[i * 2] = "0123456789abcdef"[bytes[i] >> 4];
+                hex[i * 2 + 1] = "0123456789abcdef"[bytes[i] & 0xf];
+            }
+            return new string(hex);
         }
 
         private static Exception Unwrap(Exception e)

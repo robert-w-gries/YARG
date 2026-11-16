@@ -3,7 +3,6 @@
 //! See `include/yarg_link.h` for the interface. Every exported function catches panics and turns
 //! them into `YL_ERR_PANIC`, so nothing ever unwinds into the game.
 
-mod key;
 mod log;
 mod node;
 mod ticket;
@@ -18,7 +17,7 @@ use std::{
 pub use node::{Config, MAX_FRAME, MAX_UNRELIABLE};
 use node::{Error, Event, Node};
 
-pub const YL_ABI_VERSION: u32 = 2;
+pub const YL_ABI_VERSION: u32 = 3;
 
 pub const YL_OK: i32 = 0;
 pub const YL_ERR_INVALID_ARG: i32 = -1;
@@ -283,6 +282,24 @@ pub unsafe extern "C" fn yl_poll(h: *mut YlHandle, ev: *mut YlEvent, buf: *mut u
             }
             (1, true)
         }))
+    })
+}
+
+/// # Safety
+/// See `yarg_link.h`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn yl_peer_id(h: *mut YlHandle, peer: u32, buf: *mut c_char, cap: usize, len: *mut usize) -> i32 {
+    guard(|| {
+        let node = unsafe { handle(h) }?;
+        match node.peer_id(peer) {
+            Some(id) => unsafe { write_text(&id, buf, cap, len) },
+            None => {
+                if !len.is_null() {
+                    unsafe { *len = 0 };
+                }
+                Err(invalid("unknown or unconnected peer"))
+            }
+        }
     })
 }
 

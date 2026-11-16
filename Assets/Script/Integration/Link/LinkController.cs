@@ -284,11 +284,28 @@ namespace YARG.Integration.Link
             ToastManager.ToastInformation(host ? "You ended the online session" : "You left the online session");
         }
 
-        /// <summary>Host only: remove a friend from the session.</summary>
+        /// <summary>
+        /// Host only: remove a friend from the session. The session refuses them if they come back as the same
+        /// game, but a modified game can still get back in with the invite code; see <see cref="KickAndChangeCode"/>.
+        /// </summary>
         public void Kick(LinkMember member)
         {
             if (_session is not { Role: LinkRole.Host }) return;
             _session.Kick(member);
+        }
+
+        /// <summary>
+        /// Host only: remove a friend, then start a new session with a new invite code (copied to the clipboard),
+        /// so the old code stops working for anyone. Everyone else leaves too, and joins again with the new code.
+        /// </summary>
+        public void KickAndChangeCode(LinkMember member)
+        {
+            if (_session is not { Role: LinkRole.Host }) return;
+            _session.Kick(member);
+            if (Host())
+            {
+                ToastManager.ToastInformation("Started a new session. Send your other friends the new invite code.");
+            }
         }
 
         public void CopyInviteCode()
@@ -402,7 +419,8 @@ namespace YARG.Integration.Link
 
             if (role == LinkRole.Host)
             {
-                YargLogger.LogInfo($"Link: hosting as {name}. Friends join with: -link-join {_session.LocalTicket}");
+                // Not the invite code itself: logs get posted publicly when people ask for help
+                YargLogger.LogInfo($"Link: hosting as {name}, invite code {LinkSession.ShortTicket(_session.LocalTicket)}");
             }
             return true;
         }
@@ -421,8 +439,14 @@ namespace YARG.Integration.Link
         }
 
         /// <summary>The iroh transport, or <c>null</c> (with why) if it can't be used here.</summary>
+        /// <remarks>
+        /// Every transport gets a new identity, so a host's invite code stops working when its session ends, and
+        /// a joiner can't be recognised from one session to the next.
+        /// </remarks>
         private static NativeLinkTransport CreateNativeTransport(LinkRole role, out string problem)
         {
+            DeleteOldKeyFile();
+
             string path;
             try
             {
@@ -444,8 +468,6 @@ namespace YARG.Integration.Link
             {
                 var transport = new NativeLinkTransport(path, new NativeLinkConfig
                 {
-                    // The same identity every time, so an invite code keeps working
-                    KeyFile = Path.Combine(PathHelper.PersistentDataPath, "link", "secret.key"),
                     // A joiner only talks to its host, so nobody else gets to connect to it
                     Accept = role == LinkRole.Host,
                     MaxPeers = TransportMaxPeers,
@@ -459,6 +481,34 @@ namespace YARG.Integration.Link
             {
                 problem = e.Message;
                 return null;
+            }
+        }
+
+        private static bool _oldKeyFileChecked;
+
+        /// <summary>
+        /// Earlier builds kept one identity in <c>link/secret.key</c>, so their invite code worked forever. The key
+        /// is a credential (whoever has it can pose as that host), and nothing uses it any more, so remove it.
+        /// </summary>
+        private static void DeleteOldKeyFile()
+        {
+            if (_oldKeyFileChecked) return;
+            _oldKeyFileChecked = true;
+
+            string dir = Path.Combine(PathHelper.PersistentDataPath, "link");
+            foreach (string name in new[] { "secret.key", "secret.key.lock", "secret.tmp" })
+            {
+                string path = Path.Combine(dir, name);
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    File.Delete(path);
+                    YargLogger.LogInfo($"Link: deleted {name}, which older versions used for a permanent invite code");
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    YargLogger.LogWarning($"Link: couldn't delete the old {name}: {e.Message}");
+                }
             }
         }
 
@@ -706,11 +756,17 @@ namespace YARG.Integration.Link
                 {
                     ByeCodes.INCOMPATIBLE => "Can't join: different versions",
                     ByeCodes.KICKED       => "Removed from the session",
+                    ByeCodes.LEFT         => "Session ended",
                     _                     => "Couldn't join",
                 };
-                string message = disconnect.Code == ByeCodes.INCOMPATIBLE
-                    ? $"Everyone in an online session has to play the same version of YARG.\n\n{Sentence(disconnect.Reason)}"
-                    : Sentence(disconnect.Reason);
+                string message = disconnect.Code switch
+                {
+                    ByeCodes.INCOMPATIBLE =>
+                        $"Everyone in an online session has to play the same version of YARG.\n\n{Sentence(disconnect.Reason)}",
+                    // Every session has its own code, so the old one won't work again
+                    ByeCodes.LEFT => "The host ended the online session. If they host again, ask them for the new invite code.",
+                    _             => Sentence(disconnect.Reason),
+                };
 
                 Close();
                 ShowProblem(title, message);
@@ -722,9 +778,7 @@ namespace YARG.Integration.Link
             if (disconnect.Reason != _lastProblem)
             {
                 _lastProblem = disconnect.Reason;
-                ToastManager.ToastWarning(disconnect.Code == ByeCodes.LEFT
-                    ? "The host ended the online session. Trying to reconnect..."
-                    : $"Lost the online session ({disconnect.Reason}). Trying to reconnect...");
+                ToastManager.ToastWarning($"Lost the online session ({disconnect.Reason}). Trying to reconnect...");
             }
         }
 

@@ -96,7 +96,7 @@ worse result.
 
 | Rust: `Native/YargLink` (cdylib) | C#: YARG |
 |---|---|
-| iroh endpoint, secret key storage | Lobby state and UI |
+| iroh endpoint (a new identity per handle) | Lobby state and UI |
 | Connect/accept by ticket or endpoint ID | Synced-start coordinator (ported from `coordinator.rs`) |
 | Reliable ordered channel (QUIC stream) | Discord invite/join: join secret ↔ endpoint ticket |
 | Unreliable channel (QUIC datagrams) | Gameplay sync: input streams, remote highways, scoreboard |
@@ -267,6 +267,9 @@ Phase 2 notes (2026-11-14):
   part of the `ILinkTransport` contract and is tested on both transports.
 - The secret key is in `<persistent data>/link/secret.key`, so the invite code stays the same between
   runs. The key file is locked, and a second instance on the same machine gets a temporary ID.
+  *Superseded (security review, 2026-11-15):* every session now gets a new identity, so codes expire
+  with their session and joiners can't be recognised across sessions. Old key files are deleted. See
+  "Security review: admission and identity" below.
 - `LinkController` uses the native transport by default. `-link-transport loopback` (or a `loopback:`
   ticket) picks loopback, and hosting falls back to loopback when the platform has no library yet
   (Windows and macOS until phase 3). The host's invite code is copied to the clipboard. The joiner no
@@ -384,6 +387,28 @@ Phase 4 notes (2026-11-15):
 - **Not yet tested:** the band fail meter in a real song (the Editor had no songs or profiles), the
   lobby's look (batch mode can't capture overlay UI), and controller navigation of the lobby list. All
   three need the Windows ↔ macOS ↔ Linux test from phase 3.
+
+Security review: admission and identity (2026-11-15):
+
+- **Invite codes last one session.** The persistent `link/secret.key` is gone (`key_file` was removed
+  from the native config, and the game deletes an old key file the first time it opens a transport).
+  Every host and joiner endpoint gets a new random identity, so a code that leaked stops working when
+  its session ends, and a host can't recognise or dial a joiner later. Joiners also refuse incoming
+  connections (`accept: false`). A future Discord join flow needs to hand out each session's code, not a
+  stable one.
+- **Joiners don't retry after the host ends the session** (`bye` code `left`): the code is dead by then.
+  A connection that just dropped is still retried, because the host's endpoint (and so the code) is
+  still up.
+- **Kick:** `yl_peer_id` (ABI 3) gives the session each peer's endpoint ID (authenticated by the QUIC
+  handshake), and `LinkSession` bans the IDs it kicks for the rest of the session, refusing them before
+  saying anything. Endpoint IDs are free to make, so this only stops a game that reconnects as itself. The
+  remove dialog therefore also offers "Remove and Change Code", which kicks, ends the session and hosts a
+  new one with a new code (everyone else has to rejoin with it).
+- **Hello order:** the host no longer sends its hello (name, game version) on connect. It waits for the
+  joiner's hello, checks protocol, version, cap and ban, and only then replies. The joiner still speaks
+  first.
+- **Logs:** invite codes are logged as their first 8 characters (`LinkSession.ShortTicket`), the native
+  library logs its own ID with `fmt_short`, and bad-ticket errors no longer repeat the input.
 
 ### Phase 5: after MVP
 

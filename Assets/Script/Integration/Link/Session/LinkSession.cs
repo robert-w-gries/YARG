@@ -67,8 +67,11 @@ namespace YARG.Integration.Link.Session
             Code = code;
         }
 
-        /// <summary>Whether joining again could work without anyone changing anything.</summary>
-        public bool CanRetry => Code is null or ByeCodes.LEFT;
+        /// <summary>
+        /// Whether joining again could work without anyone changing anything: only when the connection just
+        /// dropped. A host that ended its session on purpose comes back, if at all, with a new invite code.
+        /// </summary>
+        public bool CanRetry => Code is null;
 
         public override string ToString() => Code == null ? Reason : $"{Reason} ({Code})";
     }
@@ -137,6 +140,9 @@ namespace YARG.Integration.Link.Session
             public readonly PeerId Peer;
             public readonly double ConnectedAt;
 
+            /// <summary>Who the transport says is on the other end; see <see cref="ILinkTransport.GetPeerIdentity"/>.</summary>
+            public string Identity;
+
             /// <summary>Set once the hello is accepted.</summary>
             public LinkMember Member;
 
@@ -169,6 +175,12 @@ namespace YARG.Integration.Link.Session
 
         private readonly Dictionary<PeerId, PeerState>  _peers   = new();
         private readonly Dictionary<string, LinkMember> _members = new();
+
+        /// <summary>
+        /// Host only: transport identities of members removed from this session, refused if they come back.
+        /// Only stops a game that reconnects as itself; see <see cref="Kick"/>.
+        /// </summary>
+        private readonly HashSet<string> _banned = new();
 
         private string _localScene = SCENE_MENU;
         private string _localStatus;
@@ -261,7 +273,7 @@ namespace YARG.Integration.Link.Session
             }
 
             _hostPeer = _transport.Connect(ticket);
-            Info($"joining {ticket}");
+            Info($"joining {ShortTicket(ticket)}");
         }
 
         public void SetLocalScene(string scene)
@@ -308,7 +320,14 @@ namespace YARG.Integration.Link.Session
         /// <summary>The status last passed to <see cref="SetLocalState"/>.</summary>
         public string LocalStatus => _localStatus;
 
-        /// <summary>Host only: remove a joiner from the session.</summary>
+        /// <summary>
+        /// Host only: remove a joiner from the session, and refuse their connection if they come back with the
+        /// same identity.
+        /// </summary>
+        /// <remarks>
+        /// A modified game can come back with a new identity whenever it likes, and still has the invite code.
+        /// The only removal that holds is a new session, with a new code that the removed member isn't sent.
+        /// </remarks>
         public void Kick(LinkMember member)
         {
             if (Role != LinkRole.Host)
@@ -322,6 +341,7 @@ namespace YARG.Integration.Link.Session
             }
 
             Info($"removing {member}");
+            if (state.Identity != null) _banned.Add(state.Identity);
             Refuse(state, "the host removed you from the session", ByeCodes.KICKED);
         }
 
@@ -440,15 +460,36 @@ namespace YARG.Integration.Link.Session
             // The host passes on everyone's data, so a joiner allows it proportionally more
             double scale = Role == LinkRole.Join ? Math.Max(1, _options.MaxMembers) + 1 : 1;
             var state = new PeerState(peer, _clock(), _options.MessagesPerSecond * scale,
-                _options.BytesPerSecond * scale, _options.BurstSeconds);
+                _options.BytesPerSecond * scale, _options.BurstSeconds)
+            {
+                Identity = _transport.GetPeerIdentity(peer),
+            };
             _peers[peer] = state;
 
-            if (Role == LinkRole.Join && peer != _hostPeer)
+            if (Role == LinkRole.Join)
             {
-                Refuse(state, "this game isn't hosting", ByeCodes.REFUSED);
+                if (peer != _hostPeer)
+                {
+                    Refuse(state, "this game isn't hosting", ByeCodes.REFUSED);
+                    return;
+                }
+
+                // We know whom we dialled, so we speak first
+                SendHello(peer);
                 return;
             }
 
+            if (state.Identity != null && _banned.Contains(state.Identity))
+            {
+                Refuse(state, "the host removed you from the session", ByeCodes.KICKED);
+                return;
+            }
+
+            // The host says nothing about itself (name, version) until the joiner's hello checks out
+        }
+
+        private void SendHello(PeerId peer)
+        {
             Send(peer, new HelloMessage
             {
                 Protocol = LinkProtocol.VERSION,
@@ -611,6 +652,7 @@ namespace YARG.Integration.Link.Session
                 state.Member = member;
                 _members[member.Id] = member;
                 Info($"{member} joined");
+                SendHello(state.Peer);
                 Raise(() => MemberJoined?.Invoke(member));
                 SendRoster();
                 Apply(_coordinator.OnTick(Present(), _clock()));
@@ -791,6 +833,17 @@ namespace YARG.Integration.Link.Session
         #endregion
 
         #region Helpers
+
+        /// <summary>
+        /// Enough of a ticket to tell two apart in a log, but not to use one. Logs get posted publicly, and a
+        /// ticket is an invite code.
+        /// </summary>
+        public static string ShortTicket(string ticket)
+        {
+            ticket = ticket?.Trim();
+            if (string.IsNullOrEmpty(ticket)) return "(none)";
+            return ticket.Length <= 8 ? "(short ticket)" : ticket.Substring(0, 8) + "...";
+        }
 
         private List<SyncStartCoordinator.Present> Present()
         {

@@ -35,11 +35,17 @@ need a rebuild of this library.
   already queued, so a goodbye followed by a disconnect arrives. The stream is finished first, and
   the connection closes once the peer has read everything (or after 2 s).
 - **Tickets** are an endpoint ID, optionally followed by `@addr,addr,relay-url`. A bare ID is short
-  and never goes stale, and iroh finds the addresses through n0's DNS. Connect attempts are retried
-  until the timeout, because a host that just started may not have published its addresses yet.
-- **Identity.** With `key_file`, the endpoint ID (and so the invite code) is the same on every run.
-  The key file is locked, so a second copy of the game on the same machine gets a temporary identity
-  instead of fighting over the ID.
+  and keeps working while its handle lives, even if the addresses change, because iroh finds them
+  through n0's DNS. Connect attempts are retried until the timeout, because a host that just started
+  may not have published its addresses yet.
+- **Identity.** Every handle gets a new, random endpoint ID, and so a new ticket. Nothing is stored
+  on disk. A ticket stops working once its handle is destroyed (the game opens one per session), and
+  peers can't recognise a game from one handle to the next. `yl_peer_id` reports a connected peer's
+  endpoint ID, which the QUIC handshake authenticates; the game uses it to keep a kicked peer out
+  for the rest of a session. (Earlier versions had a `key_file` option for a stable ID. It was
+  removed, and an old `key_file` member in the config is ignored.)
+- **Logging.** Endpoint IDs are logged shortened, and ticket parse errors don't repeat the ticket:
+  a full ID is an invite code, and logs get posted publicly.
 
 ## Building
 
