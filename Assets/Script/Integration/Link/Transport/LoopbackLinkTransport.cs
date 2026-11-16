@@ -33,7 +33,11 @@ namespace YARG.Integration.Link.Transport
         /// <summary>The same budget as an iroh/QUIC datagram on a typical path.</summary>
         public const int MAX_UNRELIABLE_SIZE = 1200;
 
-        private const int MAX_FRAME_SIZE = 16 * 1024 * 1024;
+        /// <summary>The largest reliable message; the same as the native transport's.</summary>
+        public const int MAX_RELIABLE_SIZE = 1024 * 1024 - 1;
+
+        private const int MAX_FRAME_SIZE = MAX_RELIABLE_SIZE + 1;
+        private const int MAX_HELLO_FRAME_SIZE = 64;
 
         private const byte FRAME_HELLO = 0;
         private const byte FRAME_DATA  = 1;
@@ -51,6 +55,9 @@ namespace YARG.Integration.Link.Transport
         private readonly ConcurrentQueue<LinkEvent>          _events      = new();
         private readonly ConcurrentDictionary<uint, Connection> _connections = new();
 
+        private readonly bool _accept;
+        private readonly int  _maxPeers;
+
         private int           _nextId;
         private volatile bool _disposed;
 
@@ -64,10 +71,15 @@ namespace YARG.Integration.Link.Transport
         /// <param name="address">Address to listen on; <see cref="IPAddress.Loopback"/> by default.
         /// Use <see cref="IPAddress.Any"/> to accept connections from the LAN.</param>
         /// <param name="advertisedHost">Host to put in <see cref="LocalTicket"/>, for example a LAN address.</param>
+        /// <param name="accept">Accept incoming connections. Off for a game that only joins others.</param>
+        /// <param name="maxPeers">The most connections at once; further incoming ones are closed.</param>
         /// <exception cref="SocketException">The port is in use.</exception>
-        public LoopbackLinkTransport(int port = 0, IPAddress address = null, string advertisedHost = null)
+        public LoopbackLinkTransport(int port = 0, IPAddress address = null, string advertisedHost = null,
+            bool accept = true, int maxPeers = 16)
         {
             address ??= IPAddress.Loopback;
+            _accept = accept;
+            _maxPeers = Math.Max(1, maxPeers);
 
             _listener = new TcpListener(address, port);
             _listener.Start();
@@ -148,6 +160,12 @@ namespace YARG.Integration.Link.Transport
                 throw new ArgumentException(
                     $"Unreliable message of {data.Length} bytes is over the {MAX_UNRELIABLE_SIZE} byte limit",
                     nameof(data));
+            }
+
+            if (delivery == Delivery.Reliable && data.Length > MAX_RELIABLE_SIZE)
+            {
+                throw new ArgumentException(
+                    $"Message of {data.Length} bytes is over the {MAX_RELIABLE_SIZE} byte limit", nameof(data));
             }
 
             if (_disposed || !_connections.TryGetValue(peer.Value, out var connection) || !connection.Ready)
@@ -284,6 +302,12 @@ namespace YARG.Integration.Link.Transport
                     return;
                 }
 
+                if (!_accept || _connections.Count >= _maxPeers)
+                {
+                    client.Dispose();
+                    continue;
+                }
+
                 var connection = AddConnection();
                 StartThread(() => Run(connection, client), "YARG Link peer");
             }
@@ -338,7 +362,8 @@ namespace YARG.Integration.Link.Transport
                 }
 
                 int length = BinaryPrimitives.ReadInt32LittleEndian(header);
-                if (length < 1 || length > MAX_FRAME_SIZE)
+                int max = connection.Ready ? MAX_FRAME_SIZE : MAX_HELLO_FRAME_SIZE;
+                if (length < 1 || length > max)
                 {
                     return $"bad frame length {length}";
                 }

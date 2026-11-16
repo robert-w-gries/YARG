@@ -19,7 +19,7 @@ namespace YARG.Link.Tests
 
         public static string Path => _path.Value;
 
-        public static NativeLinkTransport Transport()
+        public static NativeLinkTransport Transport(Action<NativeLinkConfig> configure = null)
         {
             if (Path == null)
             {
@@ -32,7 +32,7 @@ namespace YARG.Link.Tests
             }
 
             // Localhost only: no relays and no DNS, so tests run offline
-            return new NativeLinkTransport(Path, new NativeLinkConfig
+            var config = new NativeLinkConfig
             {
                 Relay = false,
                 AddressLookup = false,
@@ -40,7 +40,9 @@ namespace YARG.Link.Tests
                 TicketAddresses = true,
                 ConnectTimeout = TimeSpan.FromSeconds(5),
                 LogFilter = "warn",
-            });
+            };
+            configure?.Invoke(config);
+            return new NativeLinkTransport(Path, config);
         }
 
         private static string Find()

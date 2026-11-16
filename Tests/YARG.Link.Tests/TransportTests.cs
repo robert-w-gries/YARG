@@ -21,8 +21,16 @@ namespace YARG.Link.Tests
             _kind = kind;
         }
 
-        private ILinkTransport NewTransport() =>
-            _kind == "native" ? NativeLibrary.Transport() : new LoopbackLinkTransport();
+        private ILinkTransport NewTransport(bool accept = true, int maxPeers = 16) => _kind == "native"
+            ? NativeLibrary.Transport(c =>
+            {
+                c.Accept = accept;
+                c.MaxPeers = maxPeers;
+            })
+            : new LoopbackLinkTransport(accept: accept, maxPeers: maxPeers);
+
+        private int MaxReliableSize =>
+            _kind == "native" ? NativeLinkTransport.MAX_RELIABLE_SIZE : LoopbackLinkTransport.MAX_RELIABLE_SIZE;
 
         [TearDown]
         public void TearDown()
@@ -31,9 +39,9 @@ namespace YARG.Link.Tests
             _disposables.Clear();
         }
 
-        private ILinkTransport Transport()
+        private ILinkTransport Transport(bool accept = true, int maxPeers = 16)
         {
-            var t = NewTransport();
+            var t = NewTransport(accept, maxPeers);
             _disposables.Add(t);
             return t;
         }
@@ -103,12 +111,51 @@ namespace YARG.Link.Tests
             var (a, b) = (Transport(), Transport());
             var (_, atB) = Pair(a, b);
 
-            var big = new byte[2 * 1024 * 1024];
+            var big = new byte[MaxReliableSize];
             new Random(1).NextBytes(big);
             b.Send(atB, big, Delivery.Reliable);
 
             var ev = WaitFor(a, e => e.Type == LinkEventType.Message);
             Assert.That(ev.Data, Is.EqualTo(big));
+
+            Assert.Throws<ArgumentException>(() => b.Send(atB, new byte[MaxReliableSize + 1], Delivery.Reliable));
+        }
+
+        [Test]
+        public void JoinOnlyTransportRefusesIncoming()
+        {
+            var joiner = Transport(accept: false);
+            var other = Transport();
+
+            var peer = other.Connect(joiner.LocalTicket);
+            var seen = new List<LinkEvent>();
+            WaitFor(other, e => e.Type == LinkEventType.PeerDisconnected && e.Peer == peer, seen);
+            Assert.That(seen.Any(e => e.Type == LinkEventType.PeerConnected), Is.False);
+
+            Thread.Sleep(100);
+            Assert.That(joiner.TryPoll(out var ev), Is.False, $"joiner saw {ev}");
+
+            // Connecting out still works
+            Pair(joiner, Transport());
+        }
+
+        [Test]
+        public void IncomingConnectionsAreCapped()
+        {
+            var host = Transport(maxPeers: 2);
+            var joiners = new[] { Transport(), Transport(), Transport() };
+
+            foreach (var j in joiners.Take(2))
+            {
+                var peer = j.Connect(host.LocalTicket);
+                WaitFor(j, e => e.Type == LinkEventType.PeerConnected && e.Peer == peer);
+                WaitFor(host, e => e.Type == LinkEventType.PeerConnected);
+            }
+
+            var refused = joiners[2].Connect(host.LocalTicket);
+            WaitFor(joiners[2], e => e.Type == LinkEventType.PeerDisconnected && e.Peer == refused);
+            Thread.Sleep(100);
+            Assert.That(host.TryPoll(out var ev) && ev.Type == LinkEventType.PeerConnected, Is.False);
         }
 
         [Test]

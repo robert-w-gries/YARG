@@ -15,10 +15,10 @@ use std::{
     ptr, slice,
 };
 
-pub use node::{Config, MAX_UNRELIABLE};
+pub use node::{Config, MAX_FRAME, MAX_UNRELIABLE};
 use node::{Error, Event, Node};
 
-pub const YL_ABI_VERSION: u32 = 1;
+pub const YL_ABI_VERSION: u32 = 2;
 
 pub const YL_OK: i32 = 0;
 pub const YL_ERR_INVALID_ARG: i32 = -1;

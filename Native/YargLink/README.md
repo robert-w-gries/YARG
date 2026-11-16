@@ -25,6 +25,12 @@ need a rebuild of this library.
   messages, framed as `[u32 length][u8 kind][payload]`, and QUIC datagrams for unreliable ones.
   Both sides send a hello frame first. A peer counts as connected once the other side's hello
   arrives.
+- **Limits.** Every peer is treated as potentially hostile. A reliable frame is at most 1 MiB
+  (`YL_MAX_RELIABLE`), and a hello at most 64 bytes; a peer that announces more is disconnected
+  before its payload is read, and frame buffers grow as data arrives rather than from the header.
+  Incoming connections are capped (`max_peers`, and a handful handshaking at once, each within
+  10 s); a game that only joins sets `"accept": false` and refuses them all. A peer whose messages
+  pile up unpolled (16k messages or 32 MiB) is disconnected; its datagrams are dropped instead.
 - **Graceful close.** `yl_disconnect` and `yl_destroy` still deliver reliable messages that were
   already queued, so a goodbye followed by a disconnect arrives. The stream is finished first, and
   the connection closes once the peer has read everything (or after 2 s).
