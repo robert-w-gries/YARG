@@ -41,6 +41,12 @@ namespace YARG.Integration.Link.Transport
         /// <summary>Which log lines to report, as a tracing filter; <c>null</c> for the library default.</summary>
         public string LogFilter;
 
+        /// <summary>Accept incoming connections. Off for a game that only joins others.</summary>
+        public bool Accept = true;
+
+        /// <summary>The most peers at once, counting incoming connections that are still handshaking.</summary>
+        public int MaxPeers = 16;
+
         internal string ToJson()
         {
             var json = new StringBuilder("{");
@@ -58,6 +64,8 @@ namespace YARG.Integration.Link.Transport
             Add("connect_timeout_ms",
                 ((long) Math.Max(1, ConnectTimeout.TotalMilliseconds)).ToString(CultureInfo.InvariantCulture));
             if (LogFilter != null) Add("log_filter", Quote(LogFilter));
+            Add("accept", Accept ? "true" : "false");
+            Add("max_peers", Math.Max(1, MaxPeers).ToString(CultureInfo.InvariantCulture));
             return json.Append('}').ToString();
         }
 
@@ -94,7 +102,10 @@ namespace YARG.Integration.Link.Transport
     {
         public const int MAX_UNRELIABLE_SIZE = 1024;
 
-        private const int ABI_VERSION = 1;
+        /// <summary>The largest reliable message (<c>YL_MAX_RELIABLE</c>).</summary>
+        public const int MAX_RELIABLE_SIZE = 1024 * 1024 - 1;
+
+        private const int ABI_VERSION = 2;
 
         private const int YL_OK                   = 0;
         private const int YL_ERR_BAD_TICKET       = -4;

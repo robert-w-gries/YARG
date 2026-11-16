@@ -10,7 +10,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -35,7 +35,25 @@ const TRANSPORT_VERSION: u16 = 1;
 const KIND_HELLO: u8 = 0;
 const KIND_DATA: u8 = 1;
 
-const MAX_FRAME: usize = 16 * 1024 * 1024;
+/// The largest reliable frame, kind byte included. The game's biggest message is a song setup
+/// (replay data for a few players, with their presets), far below this.
+pub const MAX_FRAME: usize = 1024 * 1024;
+
+/// A hello is 3 bytes; anything much bigger isn't one.
+const MAX_HELLO_FRAME: usize = 64;
+
+/// Incoming connections handshaking at once. More are refused until some finish.
+const MAX_PENDING_INCOMING: usize = 8;
+
+/// The longest an incoming connection may take to handshake. Shorter than our own connects, which
+/// may have to wait for a host's addresses to be published.
+const INCOMING_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Messages from one peer that may wait for the game to poll them. A peer that sends more than
+/// this is disconnected (reliable) or has its datagrams dropped (unreliable), so a flood can't
+/// grow the queue without bound while the game is busy, say loading a song.
+const MAX_QUEUED_MESSAGES_PER_PEER: usize = 16 * 1024;
+const MAX_QUEUED_BYTES_PER_PEER: usize = 32 * 1024 * 1024;
 
 pub const MAX_UNRELIABLE: usize = 1024;
 
@@ -76,6 +94,10 @@ pub struct Config {
     pub ticket_addrs: bool,
     pub connect_timeout_ms: u64,
     pub log_filter: String,
+    /// Accept incoming connections. A game that only joins others turns this off.
+    pub accept: bool,
+    /// The most peers at once, counting incoming connections still handshaking.
+    pub max_peers: usize,
 }
 
 impl Default for Config {
@@ -88,6 +110,8 @@ impl Default for Config {
             ticket_addrs: false,
             connect_timeout_ms: 20_000,
             log_filter: log::DEFAULT_FILTER.into(),
+            accept: true,
+            max_peers: 16,
         }
     }
 }
@@ -110,9 +134,22 @@ pub struct Stats {
     pub bytes_received: u64,
 }
 
+/// Events waiting for the game, and how many of them are each peer's messages.
+#[derive(Default)]
+struct Queue {
+    events: VecDeque<Event>,
+    backlog: HashMap<u32, Backlog>,
+}
+
+#[derive(Default)]
+struct Backlog {
+    messages: usize,
+    bytes: usize,
+}
+
 /// State shared between the C side and the runtime's tasks.
 pub struct Shared {
-    events: Mutex<VecDeque<Event>>,
+    events: Mutex<Queue>,
     queued_logs: AtomicU32,
     peers: Mutex<HashMap<u32, Arc<Peer>>>,
     next_id: AtomicU32,
@@ -160,7 +197,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Shared {
     fn new() -> Self {
         Self {
-            events: Mutex::new(VecDeque::new()),
+            events: Mutex::new(Queue::default()),
             queued_logs: AtomicU32::new(0),
             peers: Mutex::new(HashMap::new()),
             next_id: AtomicU32::new(1),
@@ -170,7 +207,7 @@ impl Shared {
 
     fn push(&self, event: Event) {
         if !self.shutting_down.load(Ordering::Acquire) {
-            lock(&self.events).push_back(event);
+            lock(&self.events).events.push_back(event);
         }
     }
 
@@ -179,15 +216,29 @@ impl Shared {
             return;
         }
         self.queued_logs.fetch_add(1, Ordering::Relaxed);
-        lock(&self.events).push_back(event);
+        lock(&self.events).events.push_back(event);
     }
 
     /// Look at the next event and decide whether to take it.
     pub fn with_front<R>(&self, f: impl FnOnce(Option<&Event>) -> (R, bool)) -> R {
-        let mut events = lock(&self.events);
-        let (result, take) = f(events.front());
-        if take && let Some(Event::Log(..)) = events.pop_front() {
-            self.queued_logs.fetch_sub(1, Ordering::Relaxed);
+        let mut queue = lock(&self.events);
+        let (result, take) = f(queue.events.front());
+        if take {
+            match queue.events.pop_front() {
+                Some(Event::Log(..)) => {
+                    self.queued_logs.fetch_sub(1, Ordering::Relaxed);
+                }
+                Some(Event::Message(peer, _, data)) => {
+                    if let Some(backlog) = queue.backlog.get_mut(&peer) {
+                        backlog.messages -= 1;
+                        backlog.bytes -= data.len();
+                        if backlog.messages == 0 {
+                            queue.backlog.remove(&peer);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
         result
     }
@@ -222,12 +273,24 @@ impl Shared {
         true
     }
 
-    /// Queue an event from a peer, unless it's been closed.
-    fn push_from(&self, peer: &Peer, event: Event) {
+    /// Queue a message from a peer, unless it's been closed. False if the peer already has as much
+    /// waiting as it may; the message is dropped then.
+    fn push_message(&self, peer: &Peer, channel: u8, data: Bytes) -> bool {
         let state = lock(&peer.state);
-        if *state == State::Ready {
-            self.push(event);
+        if *state != State::Ready || self.shutting_down.load(Ordering::Acquire) {
+            return true;
         }
+        let mut queue = lock(&self.events);
+        let backlog = queue.backlog.entry(peer.id).or_default();
+        if backlog.messages >= MAX_QUEUED_MESSAGES_PER_PEER
+            || backlog.bytes + data.len() > MAX_QUEUED_BYTES_PER_PEER
+        {
+            return false;
+        }
+        backlog.messages += 1;
+        backlog.bytes += data.len();
+        queue.events.push_back(Event::Message(peer.id, channel, data));
+        true
     }
 
     /// Close a peer and report it, exactly once. A graceful close still delivers the reliable
@@ -291,7 +354,12 @@ impl Node {
             let endpoint = runtime.block_on(Self::bind(&config, secret))?;
             info!("endpoint {} is up", endpoint.id());
 
-            runtime.spawn(accept_loop(endpoint.clone(), shared.clone(), config.connect_timeout()));
+            if config.accept {
+                let timeout = config.connect_timeout().min(INCOMING_TIMEOUT);
+                runtime.spawn(accept_loop(endpoint.clone(), shared.clone(), timeout, config.max_peers));
+            } else {
+                runtime.spawn(refuse_loop(endpoint.clone()));
+            }
 
             Ok(Node {
                 runtime: Some(runtime),
@@ -489,7 +557,9 @@ impl Drop for Node {
             runtime.shutdown_timeout(Duration::from_millis(500));
         });
 
-        lock(&self.shared.events).clear();
+        let mut queue = lock(&self.shared.events);
+        queue.events.clear();
+        queue.backlog.clear();
     }
 }
 
@@ -501,8 +571,8 @@ fn encode_frame(kind: u8, payload: &[u8]) -> Bytes {
     frame.into()
 }
 
-/// Read one frame. `Ok(None)` means the stream ended cleanly between frames.
-async fn read_frame(recv: &mut RecvStream) -> std::result::Result<Option<(u8, Vec<u8>)>, String> {
+/// Read one frame of at most `max` bytes. `Ok(None)` means the stream ended cleanly between frames.
+async fn read_frame(recv: &mut RecvStream, max: usize) -> std::result::Result<Option<(u8, Vec<u8>)>, String> {
     let mut header = [0u8; 4];
     match recv.read_exact(&mut header).await {
         Ok(()) => {}
@@ -510,11 +580,21 @@ async fn read_frame(recv: &mut RecvStream) -> std::result::Result<Option<(u8, Ve
         Err(e) => return Err(e.to_string()),
     }
     let len = u32::from_le_bytes(header) as usize;
-    if len == 0 || len > MAX_FRAME {
-        return Err(format!("bad frame length {len}"));
+    if len == 0 {
+        return Err("empty frame".into());
     }
-    let mut frame = vec![0u8; len];
-    recv.read_exact(&mut frame).await.map_err(|e| e.to_string())?;
+    if len > max {
+        return Err(format!("frame of {len} bytes is over the {max} byte limit"));
+    }
+
+    // Grow the buffer as data arrives, so a header alone can't make us allocate the whole frame
+    let mut frame = Vec::with_capacity(len.min(64 * 1024));
+    while frame.len() < len {
+        match recv.read_chunk(len - frame.len()).await.map_err(|e| e.to_string())? {
+            Some(chunk) => frame.extend_from_slice(&chunk),
+            None => return Err("stream ended in the middle of a frame".into()),
+        }
+    }
     let kind = frame.remove(0);
     Ok(Some((kind, frame)))
 }
@@ -526,7 +606,7 @@ async fn send_hello(send: &mut SendStream) -> std::result::Result<(), String> {
 }
 
 async fn read_hello(recv: &mut RecvStream) -> std::result::Result<(), String> {
-    match read_frame(recv).await {
+    match read_frame(recv, MAX_HELLO_FRAME).await {
         Ok(Some((KIND_HELLO, payload))) if payload.len() >= 2 => {
             let version = u16::from_le_bytes([payload[0], payload[1]]);
             if version != TRANSPORT_VERSION {
@@ -594,15 +674,38 @@ async fn connect_incoming(incoming: Incoming) -> std::result::Result<Established
     Ok((conn, send, recv))
 }
 
-async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, timeout: Duration) {
+/// Counts an incoming connection as handshaking for as long as it lives.
+struct Pending(Arc<AtomicUsize>);
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, timeout: Duration, max_peers: usize) {
+    let pending = Arc::new(AtomicUsize::new(0));
     while let Some(incoming) = endpoint.accept().await {
         if shared.shutting_down.load(Ordering::Acquire) {
             incoming.refuse();
             continue;
         }
+
+        let peers = lock(&shared.peers).len();
+        let handshaking = pending.load(Ordering::Acquire);
+        if handshaking >= MAX_PENDING_INCOMING || peers + handshaking >= max_peers {
+            debug!("refusing an incoming connection ({peers} peers, {handshaking} connecting)");
+            incoming.refuse();
+            continue;
+        }
+        pending.fetch_add(1, Ordering::AcqRel);
+        let pending = Pending(pending.clone());
+
         let shared = shared.clone();
         tokio::spawn(async move {
-            match tokio::time::timeout(timeout, connect_incoming(incoming)).await {
+            let established = tokio::time::timeout(timeout, connect_incoming(incoming)).await;
+            drop(pending);
+            match established {
                 Ok(Ok((conn, send, recv))) => {
                     if shared.shutting_down.load(Ordering::Acquire) {
                         return;
@@ -618,6 +721,14 @@ async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, timeout: Duration)
     }
     if !shared.shutting_down.load(Ordering::Acquire) {
         shared.push(Event::Error("stopped accepting connections".into()));
+    }
+}
+
+/// For a game that only joins: nobody gets to connect to it.
+async fn refuse_loop(endpoint: Endpoint) {
+    while let Some(incoming) = endpoint.accept().await {
+        debug!("refusing an incoming connection: not accepting any");
+        incoming.refuse();
     }
 }
 
@@ -682,10 +793,14 @@ async fn write_loop(conn: &Connection, mut send: SendStream, mut rx: mpsc::Unbou
 
 async fn read_loop(shared: &Shared, peer: &Peer, mut recv: RecvStream) -> String {
     loop {
-        match read_frame(&mut recv).await {
+        match read_frame(&mut recv, MAX_FRAME).await {
             Ok(Some((kind, payload))) => {
                 match kind {
-                    KIND_DATA => shared.push_from(peer, Event::Message(peer.id, CHANNEL_RELIABLE, payload.into())),
+                    KIND_DATA => {
+                        if !shared.push_message(peer, CHANNEL_RELIABLE, payload.into()) {
+                            return "peer sent more than the game could take in".into();
+                        }
+                    }
                     KIND_HELLO => {}
                     _ => {} // from a newer version; skip it
                 }
@@ -700,7 +815,9 @@ async fn datagram_loop(shared: &Shared, peer: &Peer, conn: &Connection) -> Strin
     loop {
         match conn.read_datagram().await {
             Ok(data) => {
-                shared.push_from(peer, Event::Message(peer.id, CHANNEL_UNRELIABLE, data));
+                if !shared.push_message(peer, CHANNEL_UNRELIABLE, data) {
+                    debug!(peer = peer.id, "datagram dropped: too many waiting");
+                }
             }
             Err(e) => return describe(&e),
         }

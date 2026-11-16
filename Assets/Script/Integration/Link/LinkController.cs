@@ -85,6 +85,15 @@ namespace YARG.Integration.Link
         /// <summary>Bytes per input in the <c>inputs</c> message: time (double), action (int), value (int).</summary>
         private const int INPUT_SIZE = 16;
 
+        /// <summary>
+        /// Inputs per player in one <c>inputs</c> message. A backlog (after a hitch, say) goes out over several
+        /// messages, so no message gets near the transport's size limit; friends drop messages with more.
+        /// </summary>
+        private const int MAX_INPUTS_PER_MESSAGE = 4096;
+
+        /// <summary>Input and song times further from zero than this (a day) are nonsense, whoever sent them.</summary>
+        private const double MAX_INPUT_TIME = 24 * 60 * 60;
+
         private const string KIND_SETUP    = "setup";
         private const string KIND_INPUTS   = "inputs";
         private const string KIND_FAILED   = "failed";
@@ -326,7 +335,7 @@ namespace YARG.Integration.Link
             ILinkTransport transport = null;
             if (!kind.Equals("loopback", StringComparison.OrdinalIgnoreCase))
             {
-                transport = CreateNativeTransport(out string problem);
+                transport = CreateNativeTransport(role, out string problem);
                 if (transport == null && role == LinkRole.Join)
                 {
                     YargLogger.LogFormatError("Link: {0}", problem);
@@ -341,7 +350,7 @@ namespace YARG.Integration.Link
 
             try
             {
-                transport ??= CreateTransport(port ?? (role == LinkRole.Host ? DEFAULT_PORT : 0), lan);
+                transport ??= CreateTransport(role, port ?? (role == LinkRole.Host ? DEFAULT_PORT : 0), lan);
             }
             catch (SocketException e) when (port == null && role == LinkRole.Host)
             {
@@ -349,7 +358,7 @@ namespace YARG.Integration.Link
                 YargLogger.LogWarning($"Link: port {DEFAULT_PORT} is in use ({e.Message}), using another one");
                 try
                 {
-                    transport = CreateTransport(0, lan);
+                    transport = CreateTransport(role, 0, lan);
                 }
                 catch (SocketException e2)
                 {
@@ -412,7 +421,7 @@ namespace YARG.Integration.Link
         }
 
         /// <summary>The iroh transport, or <c>null</c> (with why) if it can't be used here.</summary>
-        private static NativeLinkTransport CreateNativeTransport(out string problem)
+        private static NativeLinkTransport CreateNativeTransport(LinkRole role, out string problem)
         {
             string path;
             try
@@ -437,6 +446,9 @@ namespace YARG.Integration.Link
                 {
                     // The same identity every time, so an invite code keeps working
                     KeyFile = Path.Combine(PathHelper.PersistentDataPath, "link", "secret.key"),
+                    // A joiner only talks to its host, so nobody else gets to connect to it
+                    Accept = role == LinkRole.Host,
+                    MaxPeers = TransportMaxPeers,
                 });
                 transport.Log = LogNative;
                 problem = null;
@@ -469,11 +481,25 @@ namespace YARG.Integration.Link
             }
         }
 
-        private static LoopbackLinkTransport CreateTransport(int port, bool lan)
+        private static LoopbackLinkTransport CreateTransport(LinkRole role, int port, bool lan)
         {
+            bool accept = role == LinkRole.Host;
             return lan
-                ? new LoopbackLinkTransport(port, IPAddress.Any, FindLanAddress())
-                : new LoopbackLinkTransport(port);
+                ? new LoopbackLinkTransport(port, IPAddress.Any, FindLanAddress(), accept, TransportMaxPeers)
+                : new LoopbackLinkTransport(port, accept: accept, maxPeers: TransportMaxPeers);
+        }
+
+        /// <summary>
+        /// Connections a transport takes at once: every joiner the session admits, plus room for a few still
+        /// saying hello (which the session caps itself).
+        /// </summary>
+        private static int TransportMaxPeers
+        {
+            get
+            {
+                var defaults = new LinkSessionOptions();
+                return defaults.MaxMembers + defaults.MaxUnadmittedPeers;
+            }
         }
 
         private static string FindLanAddress()
@@ -1198,12 +1224,20 @@ namespace YARG.Integration.Link
                 bool noFail = SettingsManager.Settings.NoFail.Value != NoFailMode.Off;
                 var data = new ReplayData(colorProfiles, cameraPresets, rockMeterPresets, noFail,
                     frames.ToArray(), Array.Empty<double>());
+                var bytes = data.Serialize().ToArray();
+
+                // Friends check this before parsing it; if ours fails, the check is behind YARG.Core's format
+                if (!ReplayBlobCheck.IsSafe(bytes, ReplayIO.REPLAY_VERSIONS.CURRENT, out string problem))
+                {
+                    YargLogger.LogFormatError("Link: friends will turn down our players' replay data ({0}). " +
+                        "ReplayBlobCheck needs updating for YARG.Core's replay format.", problem);
+                }
 
                 return new JObject
                 {
                     ["song"]    = SongHash,
                     ["players"] = players,
-                    ["replay"]  = Convert.ToBase64String(data.Serialize().ToArray()),
+                    ["replay"]  = Convert.ToBase64String(bytes),
                 };
             }
 
@@ -1217,19 +1251,20 @@ namespace YARG.Integration.Link
 
                     var inputs = player.ReplayInputs;
                     int from = SentCounts[player];
-                    int count = inputs.Count - from;
+                    int count = Math.Min(inputs.Count - from, MAX_INPUTS_PER_MESSAGE);
 
                     var bytes = new byte[count * INPUT_SIZE];
                     using (var writer = new BinaryWriter(new MemoryStream(bytes)))
                     {
-                        for (int j = from; j < inputs.Count; j++)
+                        for (int j = from; j < from + count; j++)
                         {
                             writer.Write(inputs[j].Time);
                             writer.Write(inputs[j].Action);
                             writer.Write(inputs[j].Integer);
                         }
                     }
-                    SentCounts[player] = inputs.Count;
+                    // Anything left goes in the next message
+                    SentCounts[player] = from + count;
 
                     players.Add(new JObject
                     {
@@ -1277,11 +1312,22 @@ namespace YARG.Integration.Link
             /// <summary>Added to a song already.</summary>
             public bool Taken;
 
+            /// <exception cref="Exception">The setup is malformed; the caller logs it.</exception>
             public static RemoteSetup Parse(string member, JObject msg)
             {
                 var setup = new RemoteSetup { SongHash = (string) msg["song"] };
+                if (setup.SongHash == null || setup.SongHash.Length > LinkLimits.MAX_ID_LENGTH)
+                {
+                    throw new FormatException("bad song hash");
+                }
 
                 var bytes = Convert.FromBase64String((string) msg["replay"]);
+
+                // YARG.Core's reader trusts lengths in the data, so check it first
+                if (!ReplayBlobCheck.IsSafe(bytes, ReplayIO.REPLAY_VERSIONS.CURRENT, out string problem))
+                {
+                    throw new FormatException($"unusable replay data: {problem}");
+                }
                 using (var array = FixedArray.Read(new MemoryStream(bytes), bytes.Length))
                 {
                     setup.Data = new ReplayData(array.ToValueStream(), ReplayIO.REPLAY_VERSIONS.CURRENT,
@@ -1289,6 +1335,10 @@ namespace YARG.Integration.Link
                 }
 
                 var players = (JArray) msg["players"];
+                if (players.Count > LinkLimits.MAX_PLAYERS_PER_MEMBER)
+                {
+                    throw new FormatException($"{players.Count} players is more than {LinkLimits.MAX_PLAYERS_PER_MEMBER}");
+                }
                 for (int i = 0; i < players.Count; i++)
                 {
                     var p = (JObject) players[i];
@@ -1297,9 +1347,9 @@ namespace YARG.Integration.Link
 
                     setup.FrameIndices.Add(mirrored ? frame : -1);
                     setup.Feeds.Add(new RemoteInputFeed(member, i,
-                        (string) p["name"] ?? "Friend",
-                        (string) p["instrument"] ?? "",
-                        (string) p["difficulty"] ?? "",
+                        LinkLimits.Clamp((string) p["name"], LinkLimits.MAX_NAME_LENGTH) ?? "Friend",
+                        LinkLimits.Clamp((string) p["instrument"], LinkLimits.MAX_SHORT_LENGTH) ?? "",
+                        LinkLimits.Clamp((string) p["difficulty"], LinkLimits.MAX_SHORT_LENGTH) ?? "",
                         mirrored,
                         (bool?) p["bot"] ?? false));
                 }
@@ -1307,17 +1357,37 @@ namespace YARG.Integration.Link
                 return setup;
             }
 
+            private static bool IsSaneTime(double time) =>
+                !double.IsNaN(time) && !double.IsInfinity(time) && Math.Abs(time) <= MAX_INPUT_TIME;
+
             public void Receive(JObject msg, double now)
             {
                 if ((string) msg["song"] != SongHash) return;
 
                 double time = (double) msg["time"];
+                if (!IsSaneTime(time))
+                {
+                    throw new FormatException($"bad input time {time}");
+                }
+
                 var inputs = new List<GameInput>();
-                foreach (var token in (JArray) msg["players"])
+                var players = (JArray) msg["players"];
+                if (players.Count > Feeds.Count)
+                {
+                    throw new FormatException($"inputs for {players.Count} players, but the setup has {Feeds.Count}");
+                }
+                foreach (var token in players)
                 {
                     var p = (JObject) token;
                     int i = (int) p["i"];
                     if (i < 0 || i >= Feeds.Count) continue;
+
+                    var bytes = Convert.FromBase64String((string) p["inputs"] ?? "");
+                    int from = (int?) p["from"] ?? 0;
+                    if (bytes.Length / INPUT_SIZE > MAX_INPUTS_PER_MESSAGE || from < 0)
+                    {
+                        throw new FormatException($"bad inputs for player {i}");
+                    }
 
                     var feed = Feeds[i];
                     feed.SetStats(
@@ -1328,7 +1398,6 @@ namespace YARG.Integration.Link
                         (int?) p["totalNotes"] ?? 0);
 
                     inputs.Clear();
-                    var bytes = Convert.FromBase64String((string) p["inputs"] ?? "");
                     using (var reader = new BinaryReader(new MemoryStream(bytes)))
                     {
                         for (int n = 0; n < bytes.Length / INPUT_SIZE; n++)
@@ -1336,11 +1405,15 @@ namespace YARG.Integration.Link
                             double t = reader.ReadDouble();
                             int action = reader.ReadInt32();
                             int value = reader.ReadInt32();
+                            if (!IsSaneTime(t))
+                            {
+                                throw new FormatException($"bad input time {t}");
+                            }
                             inputs.Add(new GameInput(t, action, value));
                         }
                     }
 
-                    feed.Receive((int?) p["from"] ?? 0, inputs, time, now);
+                    feed.Receive(from, inputs, time, now);
                 }
             }
         }

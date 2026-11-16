@@ -161,7 +161,8 @@ namespace YARG.Integration.Link.Transport
         /// Queue a message. Sending to a peer that isn't connected (any more) is silently dropped; the
         /// disconnect is reported through <see cref="TryPoll"/>.
         /// </summary>
-        /// <exception cref="ArgumentException">An unreliable message is over <see cref="MaxUnreliableSize"/>.</exception>
+        /// <exception cref="ArgumentException">An unreliable message is over <see cref="MaxUnreliableSize"/>, or a
+        /// reliable one over the transport's own limit (1 MiB for the transports here).</exception>
         void Send(PeerId peer, ReadOnlySpan<byte> data, Delivery delivery);
 
         /// <summary>Take the next event, if any. Call until it returns <c>false</c>, every frame.</summary>

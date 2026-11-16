@@ -39,6 +39,12 @@ namespace YARG.Integration.Link
         /// <summary>The feed counts as stalled after this long without data.</summary>
         public const double STALL_SECONDS = 3.0;
 
+        /// <summary>
+        /// Received inputs waiting to be played. Gameplay drains them every frame; a friend who sends inputs
+        /// while we aren't playing their song can't grow this past here (later ones are dropped).
+        /// </summary>
+        public const int MAX_PENDING_INPUTS = 64 * 1024;
+
         /// <summary>The member ID of the friend whose player this is.</summary>
         public string Member { get; }
         public int    Index { get; }
@@ -82,6 +88,7 @@ namespace YARG.Integration.Link
         // Index of the next input we expect from the friend's input list
         private int _nextInputIndex;
         private bool _gapLogged;
+        private bool _overflowLogged;
 
         // The friend's input time (before their calibration) at the moment they sent their latest data.
         // Every input up to this time has been received.
@@ -121,11 +128,17 @@ namespace YARG.Integration.Link
                 _gapLogged = true;
             }
 
-            for (int i = skip; i < inputs.Count; i++)
+            int room = MAX_PENDING_INPUTS - _pending.Count;
+            if (inputs.Count - skip > room && !_overflowLogged)
+            {
+                YargLogger.LogWarning($"Link: too many inputs waiting from {Name}, dropping some; their track may be inaccurate");
+                _overflowLogged = true;
+            }
+            for (int i = skip; i < inputs.Count && i - skip < room; i++)
             {
                 _pending.Add(inputs[i]);
             }
-            _nextInputIndex = Math.Max(_nextInputIndex, from + inputs.Count);
+            _nextInputIndex = (int) Math.Min(int.MaxValue, Math.Max(_nextInputIndex, (long) from + inputs.Count));
 
             _watermark = Math.Max(_watermark, inputTime);
         }
