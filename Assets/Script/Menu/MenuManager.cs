@@ -40,6 +40,19 @@ namespace YARG.Menu
         /// </summary>
         private static Menu _lastOpenMenu = Menu.None;
 
+        /// <summary>
+        /// Open <paramref name="menu"/> over the main menu the next time the menu scene loads, whatever was open
+        /// when it was left (online play sends players back to the library this way). Call while the menu scene
+        /// isn't loaded, or leaving it will overwrite this.
+        /// </summary>
+        public static void OpenOnNextLoad(Menu menu)
+        {
+            if (_allowedLastOpenMenus.Contains(menu))
+            {
+                _lastOpenMenu = menu;
+            }
+        }
+
         private Dictionary<Menu, MenuObject> _menus;
 
         private readonly Stack<Menu> _openMenus = new();

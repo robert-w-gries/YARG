@@ -1,6 +1,7 @@
 using System;
 using YARG.Core.Input;
 using YARG.Core.Logging;
+using YARG.Integration.Link;
 using YARG.Menu.Navigation;
 using YARG.Menu.Persistent;
 using YARG.Replays;
@@ -95,6 +96,12 @@ namespace YARG.Gameplay.HUD
 
         public void BackToLibrary()
         {
+            // Online: a host with friends still in the song chooses whether to take them along
+            if (LinkController.Instance != null && LinkController.Instance.OfferLeaveWithParty(GameManager))
+            {
+                return;
+            }
+
             PauseMenuManager.Quit();
         }
 
