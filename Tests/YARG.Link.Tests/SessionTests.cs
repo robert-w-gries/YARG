@@ -473,7 +473,7 @@ namespace YARG.Link.Tests
                     {
                         if (ev.Type == LinkEventType.PeerConnected)
                         {
-                            var hello = new HelloMessage { Protocol = LinkProtocol.VERSION + 100, Game = "test", Member = "x" };
+                            var hello = new HelloMessage { Game = "another version", Member = "x" };
                             wrong.Send(wrongPeer, LinkProtocol.Encode(hello), Delivery.Reliable);
                         }
                         if (ev.Type == LinkEventType.Message) received.Add(LinkProtocol.Decode(ev.Data));
@@ -482,7 +482,7 @@ namespace YARG.Link.Tests
                     return silentDropped && wrongDropped;
                 }, timeoutSeconds: 10);
 
-                // The one with the wrong protocol is told why, and nothing else; the silent one hears nothing
+                // The one with the wrong game version is told why, and nothing else; the silent one hears nothing
                 Assert.That(received.OfType<HelloMessage>(), Is.Empty);
                 Assert.That(received.Select(m => m.GetType()), Is.EqualTo(new[] { typeof(ByeMessage) }));
                 Assert.That(silentPeer, Is.Not.EqualTo(default(PeerId)));

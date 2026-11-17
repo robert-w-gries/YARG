@@ -21,6 +21,19 @@ namespace YARG.Menu.Navigation
             _onClick.Invoke();
         }
 
+        /// <summary>Whether a click calls a method with one of these names (as set up in the Inspector).</summary>
+        public bool Calls(params string[] methodNames)
+        {
+            for (int i = 0; i < _onClick.GetPersistentEventCount(); i++)
+            {
+                if (System.Array.IndexOf(methodNames, _onClick.GetPersistentMethodName(i)) >= 0)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         public void RemoveOnClickListeners()
         {
             _onClick.RemoveAllListeners();

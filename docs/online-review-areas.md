@@ -72,7 +72,7 @@ The session layer does not use Unity. It controls the hello, the member list, th
 
 Examine these items:
 
-- **Versions:** Messages are JSON with a `"t"` type. `LinkProtocol.VERSION` is 1. A game ignores unknown message types.
+- **Versions:** Messages are JSON with a `"t"` type. There is no protocol version: games must have the same game version. A game ignores unknown message types.
 - **Admission:** A peer must send a hello first. Messages before the hello are 4 KiB maximum. A removed peer cannot join the same session again.
 - **Limits:** `LinkLimits` sets the maximum text lengths, 16 players for each member and message rates. All members can use a modified game. This includes the host.
 - **Host control:** Is a host-controlled session correct? This is open question 3.
@@ -165,6 +165,40 @@ These fixes are not online code. Move them to a separate PR.
 - **Shared files:** `GameManager.Loading.cs` has changes for areas 7, 8 and 9. `CommandLineArgs.cs` and `SettingsManager*.cs` have changes for areas 10 and 11.
 - **YARG.Core:** Some limitations exist because the branch does not change Core. The Core maintainers must select the changes that they want.
 - **Tests:** `native-link.yml` runs `YARG.Link.Tests` only when `Native/YargLink/` or the plugins change. CI does not run `YARG.Link.Replay.Tests`. Should CI run both tests for all changes in `Integration/Link`?
+
+## Maintenance tasks
+
+If the maintainers merge the branch, these tasks continue after the merge. Each list starts with the event that starts the task.
+
+### Regular tasks
+
+- **Relays:** The game uses the public relays of n0. n0 can change these relays at any time. Before a public release, operate a YARG relay (`iroh-relay`). The plan gives the costs and the settings. Keep the public relays of n0 as a fallback.
+- **Relay server:** If YARG operates a relay, install the operating system updates. Use the same `iroh-relay` version as the iroh version in `Cargo.lock` (1.4.1).
+- **Rust dependencies:** Examine `Cargo.lock` for security problems. If you update a dependency, build the three plugins again with `scripts/NativeBuild/` and commit them.
+- **Plugin check:** CI makes sure that the Linux and macOS plugins agree with the source. CI does not do this check for the Windows plugin. Do this check manually.
+- **Toolchains:** The Linux build uses glibc 2.31 (`ubuntu:20.04`). The macOS build uses the same Xcode version as YargAudio. If the YargAudio toolchain changes, change the YargLink toolchain also. Do not sign the macOS plugin again with `codesign`.
+
+### When YARG.Core changes
+
+- **Replay format:** `ReplayBlobCheck` accepts only one replay version and one profile version. If Core changes the replay, profile, engine parameter or stats format, update the check. If you do not update it, friends' tracks do not show.
+- **Replay tests:** CI does not run `YARG.Link.Replay.Tests`. Run them manually after a Core update.
+- **Game modes:** `LinkController.CanMirror` sets which game modes show as a friend's track. A new game mode needs replay support in Core before it can show.
+
+### When gameplay code changes
+
+- **Friends' tracks:** A friend's track is a local `TrackPlayer` with `IsRemote` set. If a new player feature plays sounds, mutes stems, shows input or rewinds, add an `IsRemote` check.
+- **Visual time:** Track elements must use `Player.PlayerVisualTime`, not `GameManager.VisualTime`.
+- **Song exit:** `GameManager.OnDestroy` calls `LinkController.OnSongExited`. This call tells friends that the player left the song. Each exit from gameplay must destroy the `GameManager`.
+- **Pause and fail menus:** Pause is synchronized. In online play, `GenericPause.HideOnlineOptions` hides the items that leave friends behind (Restart, Practice, Skip and no fail). It finds each item by the name of the method that the button calls. If you rename one of these methods, update the list. If you add a menu item, decide if it must show in online play.
+- **No fail:** Online play ignores the no fail setting. Read `GameManager.NoFailMode`, not the setting, in gameplay code.
+
+### When online messages change
+
+- **Versions:** There is no protocol version. Friends must have the same game version. A message change does not need a version change. But all friends must update to the same build.
+- **Local builds:** Two local builds with changes that are not committed have the same game version. They can connect, but their messages can be different. When you test a message change, build all test games again.
+- **Song messages:** Each message about a song must have the `play` ID of `SharedSong`. Each message that the game receives about a song must go through `LinkController.IsFromSongPlay`. Without this, messages from a restarted song have an effect on the new song.
+- **Data from friends:** A friend can use a modified game. Apply the `LinkLimits` limits to each new text, list or number from a friend.
+- **Text:** The messages in `LinkController` are English text in the code. If the maintainers localize the game text, move these messages to the localization files.
 
 ## Review order
 

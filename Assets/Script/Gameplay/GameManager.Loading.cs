@@ -238,8 +238,7 @@ namespace YARG.Gameplay
             // Friends' players are added here, before anything below snapshots the player list.
             var link = LinkController.Instance;
             bool linkedStart = false;
-            if (_loadState != LoadFailureState.Error && link != null && link.ShouldHoldForStart &&
-                !IsPractice && ReplayInfo == null)
+            if (_loadState != LoadFailureState.Error && link != null && IsOnlinePlay)
             {
                 switch (await link.WaitForStartSignal(this, context))
                 {
@@ -297,7 +296,7 @@ namespace YARG.Gameplay
 
             _failMeter.Initialize(EngineManager, this);
 
-            if (SettingsManager.Settings.NoFail.Value == NoFailMode.NoMeter || IsPractice)
+            if (NoFailMode == NoFailMode.NoMeter || IsPractice)
             {
                 _failMeter.SetActive(false);
             }
@@ -318,7 +317,7 @@ namespace YARG.Gameplay
                 SettingsManager.Settings.NoFail.OnChange += OnNoFailModeChanged;
             }
 
-            var noFail = ReplayData?.NoFail ?? SettingsManager.Settings.NoFail.Value != NoFailMode.Off;
+            var noFail = ReplayData?.NoFail ?? NoFailMode != NoFailMode.Off;
             // Online link: only the host's band meter can fail the song
             EngineManager.InitializeHappiness(noFail || BandMeterIsRemote);
             foreach (var remote in _remoteEngineManagers.Values)

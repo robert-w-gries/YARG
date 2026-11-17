@@ -163,6 +163,7 @@ namespace YARG.Integration.Link
             _session.Broadcast(KIND_PAUSE, new JObject
             {
                 ["song"]  = _shared.SongHash,
+                ["play"]  = _shared.PlayId,
                 ["n"]     = _pause.Epoch,
                 ["time"]  = time,
                 ["ready"] = _pause.LocalReady,
@@ -225,10 +226,16 @@ namespace YARG.Integration.Link
             }
         }
 
-        /// <summary>Host only: resume everyone if everyone is ready.</summary>
+        /// <summary>
+        /// Whoever runs this play of the song resumes it: the host, or a joiner playing it without the host
+        /// (one that restarted alone, say), who would otherwise wait for a resume that never comes.
+        /// </summary>
+        private bool LeadsSong => _session != null && _shared != null && !_shared.HostInPlay;
+
+        /// <summary>Host (or <see cref="LeadsSong"/>) only: resume everyone if everyone is ready.</summary>
         private void TryResumeAsHost()
         {
-            if (_session is not { Role: LinkRole.Host } || _pause is not { Active: true }) return;
+            if (!LeadsSong || _pause is not { Active: true }) return;
 
             var plan = _pause.TryResume(SongParticipants());
             if (plan is not { } p) return;
@@ -237,6 +244,7 @@ namespace YARG.Integration.Link
             _session.Broadcast(KIND_RESUME, new JObject
             {
                 ["song"]    = _shared.SongHash,
+                ["play"]    = _shared.PlayId,
                 ["n"]       = p.Epoch,
                 ["time"]    = p.InputTime,
                 ["delayMs"] = (long) Math.Round(RESUME_LEAD * 1000),
@@ -279,10 +287,9 @@ namespace YARG.Integration.Link
         private List<string> SongParticipants()
         {
             var members = new List<string> { _session.LocalMemberId };
-            foreach (var (member, setup) in _remoteSetups)
+            foreach (var (member, setup) in _songSetups)
             {
-                if (setup.Taken && setup.SongHash == _shared.SongHash &&
-                    FindMember(member) is { Scene: SCENE_GAMEPLAY })
+                if (!setup.Left && FindMember(member) is { Scene: SCENE_GAMEPLAY })
                 {
                     members.Add(member);
                 }
@@ -293,7 +300,7 @@ namespace YARG.Integration.Link
         private void OnPauseData(LinkMember member, string kind, JObject data)
         {
             var gm = _shared?.GameManager;
-            if (!IsSyncedSong(gm) || (string) data["song"] != _shared.SongHash) return;
+            if (!IsSyncedSong(gm) || !IsFromSongPlay(member, data)) return;
 
             int epoch = (int?) data["n"] ?? -1;
             double time = (double?) data["time"] ?? double.NaN;
@@ -328,7 +335,7 @@ namespace YARG.Integration.Link
                 case KIND_RESUME:
                 {
                     // Only the host resumes everyone
-                    if (_session.Role != LinkRole.Join || !member.IsHost) return;
+                    if (_session.Role != LinkRole.Join || !member.IsHost || !_shared.HostInPlay) return;
                     if (!_pause.OnRemoteResume(epoch)) return;
 
                     double delay = Math.Clamp(((double?) data["delayMs"] ?? 0) / 1000.0, 0, MAX_RESUME_LEAD);

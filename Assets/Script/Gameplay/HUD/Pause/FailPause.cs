@@ -12,6 +12,17 @@ namespace YARG.Gameplay.HUD
 
         protected override void OnEnable()
         {
+            HideOnlineOptions();
+            if (GameManager != null && GameManager.IsOnlinePlay)
+            {
+                // Only "Back to Library" is left, so there's nothing for the separators to divide
+                _separatorObject.SetActive(false);
+                foreach (Transform child in _separatorObject.transform.parent)
+                {
+                    if (child.name.StartsWith("Separator")) child.gameObject.SetActive(false);
+                }
+            }
+
             HandleNavigationScheme();
         }
 
