@@ -25,9 +25,8 @@ namespace YARG.Link.Tests
         {
             var hello = (HelloMessage) Parse(Json(new HelloMessage
             {
-                Protocol = LinkProtocol.VERSION, Game = "v1", Member = "m", Name = "Rob", Host = true,
+                Game = "v1", Member = "m", Name = "Rob", Host = true,
             }));
-            Assert.That(hello.Protocol, Is.EqualTo(LinkProtocol.VERSION));
             Assert.That(hello.Game, Is.EqualTo("v1"));
             Assert.That(hello.Member, Is.EqualTo("m"));
             Assert.That(hello.Name, Is.EqualTo("Rob"));

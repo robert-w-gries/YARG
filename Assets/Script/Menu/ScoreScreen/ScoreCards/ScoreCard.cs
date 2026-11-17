@@ -190,7 +190,9 @@ namespace YARG.Menu.ScoreScreen
             else if (!GlobalVariables.State.IsReplay)
             {
                 _colorizer.SetCardColor(ScoreCardColorizer.ScoreCardColor.Blue);
-                ShowTag(SettingsManager.Settings.NoFail.Value != NoFailMode.Off ? "Completed" : "Cleared");
+                bool noFail = GlobalVariables.State.ScoreScreenStats?.NoFail ??
+                    SettingsManager.Settings.NoFail.Value != NoFailMode.Off;
+                ShowTag(noFail ? "Completed" : "Cleared");
             }
             else
             {

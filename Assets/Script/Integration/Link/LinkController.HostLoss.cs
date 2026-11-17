@@ -128,7 +128,11 @@ namespace YARG.Integration.Link
             if (_session is { Role: LinkRole.Host } && _shared != null && _shared.GameManager == gm)
             {
                 YargLogger.LogInfo("Link: leaving the song with the party");
-                _session.Broadcast(KIND_END_SONG, new JObject { ["song"] = _shared.SongHash });
+                _session.Broadcast(KIND_END_SONG, new JObject
+                {
+                    ["song"] = _shared.SongHash,
+                    ["play"] = _shared.PlayId,
+                });
             }
 
             gm.ForceQuitSong();
@@ -138,7 +142,7 @@ namespace YARG.Integration.Link
         {
             var gm = _shared?.GameManager;
             if (_session is not { Role: LinkRole.Join } || !member.IsHost) return;
-            if (!IsSyncedSong(gm) || (string) data["song"] != _shared.SongHash) return;
+            if (!IsSyncedSong(gm) || !IsFromSongPlay(member, data)) return;
 
             YargLogger.LogInfo($"Link: {member.Name} ended the song for everyone");
             ToastManager.ToastInformation($"{member.Name} ended the song");
@@ -154,6 +158,7 @@ namespace YARG.Integration.Link
         {
             var gm = _shared?.GameManager;
             if (_session is not { Role: LinkRole.Join } || !IsSyncedSong(gm) || !gm.IsSongStarted) return;
+            if (!_shared.HostInPlay) return;
 
             // Nobody can come back to this one
             WatchHostGone(gm, reason, HOST_GONE_GRACE + HOST_LEFT_TIMEOUT);
@@ -202,7 +207,9 @@ namespace YARG.Integration.Link
 
                 var member = FindMember(id);
                 bool disconnected = member == null || !_session.IsConnected;
-                bool left = !disconnected && member.Scene != SCENE_GAMEPLAY;
+                // Out of gameplay, or onto another play of the song (a restart) while staying in it
+                bool left = !disconnected &&
+                    (member.Scene != SCENE_GAMEPLAY || _songSetups.TryGetValue(id, out var setup) && setup.Left);
                 double? silentSince = disconnected || left ? null : SilentSince(id);
                 bool lost = disconnected || silentSince.HasValue;
 
@@ -255,6 +262,7 @@ namespace YARG.Integration.Link
             _session.Broadcast(KIND_DROPPED, new JObject
             {
                 ["song"]   = _shared.SongHash,
+                ["play"]   = _shared.PlayId,
                 ["member"] = member,
             });
         }
@@ -277,7 +285,7 @@ namespace YARG.Integration.Link
         {
             var gm = _shared?.GameManager;
             if (_session is not { Role: LinkRole.Join } || !member.IsHost) return;
-            if (!IsSyncedSong(gm) || (string) data["song"] != _shared.SongHash) return;
+            if (!IsSyncedSong(gm) || !IsFromSongPlay(member, data)) return;
 
             string id = (string) data["member"];
             if (string.IsNullOrEmpty(id)) return;
@@ -340,15 +348,17 @@ namespace YARG.Integration.Link
                 _hostGone = null;
             }
 
+            // A song we're playing without the host (we restarted alone, say) carries on whatever it does
             var gm = _shared?.GameManager;
-            if (_session is { Role: LinkRole.Join } && IsSyncedSong(gm) && gm.IsSongStarted)
+            if (_session is { Role: LinkRole.Join } && IsSyncedSong(gm) && gm.IsSongStarted && _shared.HostInPlay)
             {
                 var host = HostMember();
                 if (!_session.IsConnected || host == null)
                 {
                     WatchHostGone(gm, "Lost the connection to the host", LOST_CONNECTION_DROP);
                 }
-                else if (host.Scene != SCENE_GAMEPLAY)
+                else if (host.Scene != SCENE_GAMEPLAY ||
+                    _songSetups.TryGetValue(host.Id, out var hostSetup) && hostSetup.Left)
                 {
                     WatchHostGone(gm, $"{host.Name} left the song", HOST_GONE_GRACE + HOST_LEFT_TIMEOUT);
                 }

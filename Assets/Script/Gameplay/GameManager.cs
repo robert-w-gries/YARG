@@ -243,6 +243,19 @@ namespace YARG.Gameplay
         public double LastNoteTime  { get; private set; }
 
         public ReplayInfo ReplayInfo { get; private set; }
+
+        /// <summary>
+        /// Online play: friends are in the session, so this song holds for a synced start with them. Set once
+        /// when gameplay loads. The pause and fail menus hide what would leave friends behind (restart,
+        /// practice, skip, no fail), and the no fail setting is ignored (see <see cref="NoFailMode"/>).
+        /// </summary>
+        public bool IsOnlinePlay { get; private set; }
+
+        /// <summary>
+        /// The no fail mode this song plays with: the setting, except in online play, where the band's meter
+        /// is shared and always on.
+        /// </summary>
+        public NoFailMode NoFailMode => IsOnlinePlay ? NoFailMode.Off : SettingsManager.Settings.NoFail.Value;
         public ReplayData ReplayData { get; private set; }
 
         public bool ReplaySaveInhibited { get; set; }
@@ -304,6 +317,7 @@ namespace YARG.Gameplay
             Song = GlobalVariables.State.CurrentSong;
             ReplayInfo = GlobalVariables.State.CurrentReplay;
             IsPractice = GlobalVariables.State.IsPractice && ReplayInfo == null;
+            IsOnlinePlay = LinkController.Instance is { ShouldHoldForStart: true } && !IsPractice && ReplayInfo == null;
             _bandComboType = SettingsManager.Settings.BandComboTypeSetting.Value;
 
             Navigator.Instance.PopAllSchemes();
@@ -333,6 +347,9 @@ namespace YARG.Gameplay
         private void OnDestroy()
         {
             YargLogger.LogInfo("Exiting song");
+
+            // Online link: friends learn we've left this play of the song (no-op outside a synced song)
+            LinkController.Instance?.OnSongExited(this);
 
             // Unsubscribe from other events
             SettingsManager.Settings.NoFail.OnChange -= OnNoFailModeChanged;
@@ -832,6 +849,7 @@ namespace YARG.Gameplay
                 }).ToArray(),
                 BandScore = BandScore,
                 BandStars = (int) BandStars,
+                NoFail = NoFailMode != NoFailMode.Off,
 
                 MeanAverageOffset = ActiveLocalPlayers
                     .Where(player => !player.IsBot)
@@ -1046,7 +1064,7 @@ namespace YARG.Gameplay
                 return null;
             }
 
-            var noFail = SettingsManager.Settings.NoFail.Value != NoFailMode.Off;
+            var noFail = NoFailMode != NoFailMode.Off;
             var stars = StarAmountHelper.GetStarsFromInt(Mathf.FloorToInt(bandStars));
             ReplayData = new ReplayData(colorProfiles, cameraPresets, rockMeterPresets, noFail, frames.ToArray(), _frameTimes.ToArray());
 
@@ -1125,7 +1143,7 @@ namespace YARG.Gameplay
 
         private void OnSongFailed()
         {
-            if (SettingsManager.Settings.NoFail.Value != NoFailMode.Off || IsPractice)
+            if (NoFailMode != NoFailMode.Off || IsPractice)
             {
                 return;
             }
@@ -1188,6 +1206,12 @@ namespace YARG.Gameplay
         // the possibility of an instant fail. Yes, this is cheeseable since toggling no fail resets happiness.
         private void OnNoFailModeChanged(NoFailMode mode)
         {
+            // Online play ignores the setting
+            if (IsOnlinePlay)
+            {
+                return;
+            }
+
             // If we're going from no fail to fail and happiness would result in a player being in the red, reset happiness
             if (mode == NoFailMode.Off && EngineManager.GetLowestHappiness()?.Happiness <= 0.333f && !BandMeterIsRemote)
             {

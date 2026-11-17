@@ -492,7 +492,6 @@ namespace YARG.Integration.Link.Session
         {
             Send(peer, new HelloMessage
             {
-                Protocol = LinkProtocol.VERSION,
                 Game = _options.GameVersion,
                 Member = LocalMemberId,
                 Name = LocalName,
@@ -600,14 +599,7 @@ namespace YARG.Integration.Link.Session
                 return;
             }
 
-            if (hello.Protocol != LinkProtocol.VERSION)
-            {
-                // The reason reaches both sides, so it doesn't say which is whose
-                Refuse(state, $"incompatible online protocol versions ({hello.Protocol} and {LinkProtocol.VERSION})",
-                    ByeCodes.INCOMPATIBLE);
-                return;
-            }
-
+            // The reason reaches both sides, so it doesn't say which is whose
             if (hello.Game != _options.GameVersion)
             {
                 string theirs = LinkLimits.Clamp(hello.Game, LinkLimits.MAX_SHORT_LENGTH);

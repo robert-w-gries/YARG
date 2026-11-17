@@ -87,7 +87,6 @@ namespace YARG.Integration.Link
         {
             var gm = _shared?.GameManager;
             if (gm == null || !gm.IsSongStarted || gm.Paused) return;
-            if ((string) data["song"] != _shared.SongHash) return;
 
             // Right after a synced resume, a friend's message can still be from before theirs
             if (Now < _clockHoldUntil) return;
@@ -132,7 +131,7 @@ namespace YARG.Integration.Link
             if (_session.Role != LinkRole.Join || gm.Rewinding) return;
 
             var host = FindHost();
-            if (host == null || !_clocks.TryGetValue(host.Id, out var clock) || !clock.HasEstimate) return;
+            if (host == null || !_shared.HostInPlay || !_clocks.TryGetValue(host.Id, out var clock) || !clock.HasEstimate) return;
 
             double offset = clock.Offset;
             double distance = Math.Abs(offset);
@@ -177,10 +176,8 @@ namespace YARG.Integration.Link
             _nextSyncLog = Now + SYNC_LOG_INTERVAL;
 
             var text = new StringBuilder();
-            foreach (var setup in _remoteSetups.Values)
+            foreach (var setup in _songSetups.Values)
             {
-                if (!setup.Taken) continue;
-
                 var member = FindMember(setup.Feeds.Count > 0 ? setup.Feeds[0].Member : null);
                 string rtt = member != null && member.Peer != null && _session.GetStats(member).Rtt is { } r
                     ? $"{r.TotalMilliseconds:0} ms" : "n/a";

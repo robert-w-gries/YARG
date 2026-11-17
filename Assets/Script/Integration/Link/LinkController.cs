@@ -98,6 +98,7 @@ namespace YARG.Integration.Link
         private const string KIND_INPUTS   = "inputs";
         private const string KIND_FAILED   = "failed";
         private const string KIND_DECLINED = "declined";
+        private const string KIND_LEFT     = "left";
 
         // Member statuses, as shown in the lobby (see LinkSession.SetLocalState)
         public const string STATUS_BROWSING = "browsing";
@@ -139,8 +140,11 @@ namespace YARG.Integration.Link
         private string _remoteRequestHash;
         private string _remoteRequestName;
 
-        // Friends' player setups, by member ID. Kept until we leave the song they were for.
+        // Friends' latest player setups not yet added to a song, by member ID: kept for us to join
         private readonly Dictionary<string, RemoteSetup> _remoteSetups = new();
+
+        // Friends' setups added to the synced song we're in (_shared), by member ID. Until that song ends
+        private readonly Dictionary<string, RemoteSetup> _songSetups = new();
 
         // The synced song we're sharing our inputs for, if any
         private SharedSong _shared;
@@ -729,14 +733,8 @@ namespace YARG.Integration.Link
             _remoteRequestName = null;
             _remoteSetups.Clear();
             _paths.Clear();
-            _shared = null;
-            _friendGoneSince.Clear();
-            _droppedFriends.Clear();
             _resendDropOuts = false;
-            _lastInputsAt.Clear();
-            EndBandMeter();
-            EndClockSync();
-            EndPauseSync();
+            EndSharedSong();
         }
 
         private void OnMemberJoined(LinkMember member)
@@ -750,11 +748,8 @@ namespace YARG.Integration.Link
 
         private void OnMemberLeft(LinkMember member)
         {
-            // A friend who is on a highway right now stays there, shown as stalled
-            if (_remoteSetups.TryGetValue(member.Id, out var setup) && !setup.Taken)
-            {
-                _remoteSetups.Remove(member.Id);
-            }
+            // A friend who is on a highway right now stays there (in _songSetups), shown as stalled
+            _remoteSetups.Remove(member.Id);
 
             // A joiner who lost the host hears about that instead
             if (_session is not { IsConnected: true }) return;
@@ -882,11 +877,13 @@ namespace YARG.Integration.Link
         {
             var song = gameManager.Song;
 
+            // A song that's still ours (gameplay reloaded without its GameManager telling us) is over now
+            EndSharedSong();
+
             _waiting = true;
             _startAt = null;
             _cancelReason = null;
             _remoteRequestHash = null;
-            _shared = null;
 
             // Forget setups for any other song
             string hash = song.Hash.ToString();
@@ -920,6 +917,10 @@ namespace YARG.Integration.Link
 
                 if (_startAt.HasValue)
                 {
+                    // A host taking part sent its setup before it reported ready, so before the start reached us.
+                    // Without one (it's in another song, or another play of this one), we're on our own.
+                    shared.HostInPlay = _session.Role == LinkRole.Join && HostMember() is { } host &&
+                        _remoteSetups.TryGetValue(host.Id, out var hostSetup) && hostSetup.SongHash == hash;
                     _shared = shared;
                     StartBandMeter(gameManager);
                     StartClockSync();
@@ -965,10 +966,12 @@ namespace YARG.Integration.Link
         {
             var players = new List<(ReplayFrame, ReplayData, RemoteInputFeed)>();
             string hash = song.Hash.ToString();
-            foreach (var setup in _remoteSetups.Values)
+            var taken = new List<string>();
+            foreach (var (member, setup) in _remoteSetups)
             {
-                if (setup.SongHash != hash || setup.Taken) continue;
-                setup.Taken = true;
+                if (setup.SongHash != hash) continue;
+                taken.Add(member);
+                _songSetups[member] = setup;
 
                 foreach (var feed in setup.Feeds)
                 {
@@ -984,7 +987,12 @@ namespace YARG.Integration.Link
                 }
             }
 
-            YargLogger.LogInfo($"Link: {_remoteSetups.Count} friend setup(s) received, {players.Count} highway(s) to add");
+            foreach (var member in taken)
+            {
+                _remoteSetups.Remove(member);
+            }
+
+            YargLogger.LogInfo($"Link: {_songSetups.Count} friend setup(s) for this song, {players.Count} highway(s) to add");
             return players;
         }
 
@@ -1114,15 +1122,30 @@ namespace YARG.Integration.Link
                         var setup = RemoteSetup.Parse(member.Id, data);
                         _remoteSetups[member.Id] = setup;
                         YargLogger.LogInfo($"Link: got {setup.Feeds.Count} player(s) from {member.Name} for {setup.SongHash}");
+
+                        // Starting again (a restart) leaves the play of theirs that's on our highways
+                        if (_songSetups.TryGetValue(member.Id, out var current) && !current.Left)
+                        {
+                            current.Left = true;
+                            YargLogger.LogInfo($"Link: {member.Name} started another song or play without us");
+                        }
                         break;
 
                     case KIND_INPUTS:
-                        if (_remoteSetups.TryGetValue(member.Id, out var existing))
+                        if (IsFromSongPlay(member, data))
                         {
-                            existing.Receive(data, Now);
+                            _songSetups[member.Id].Receive(data, Now);
+                            OnClockSample(member, data);
+                            NoteInputsFrom(member);
                         }
-                        OnClockSample(member, data);
-                        NoteInputsFrom(member);
+                        else if (_remoteSetups.TryGetValue(member.Id, out var pending) && pending.IsPlay(data))
+                        {
+                            pending.Receive(data, Now);
+                        }
+                        break;
+
+                    case KIND_LEFT:
+                        OnFriendLeftSong(member, data);
                         break;
 
                     case KIND_FAILED:
@@ -1171,6 +1194,7 @@ namespace YARG.Integration.Link
             _session.Broadcast(KIND_FAILED, new JObject
             {
                 ["song"] = _shared.SongHash,
+                ["play"] = _shared.PlayId,
                 ["time"] = gameManager.SongTime,
             });
         }
@@ -1178,7 +1202,7 @@ namespace YARG.Integration.Link
         private void OnFriendFailed(LinkMember member, JObject data)
         {
             var gm = _shared?.GameManager;
-            if (gm == null || (string) data["song"] != _shared.SongHash) return;
+            if (gm == null || !IsFromSongPlay(member, data)) return;
             if (!gm.IsSongStarted || gm.PlayerHasFailed) return;
 
             YargLogger.LogInfo($"Link: {member.Name} failed the song at {(double?) data["time"] ?? 0:0.00}s, failing with them");
@@ -1186,28 +1210,72 @@ namespace YARG.Integration.Link
         }
 
         /// <summary>
-        /// Drop per-song state once we've left gameplay.
+        /// Called by <see cref="GameManager"/> as it's destroyed, which is how every song ends: finished, quit,
+        /// restarted, or switched to practice. Restarting reloads gameplay without leaving it, so the scene alone
+        /// can't tell friends we've left this play of the song.
+        /// </summary>
+        public void OnSongExited(GameManager gm)
+        {
+            if (_session == null || _shared == null || _shared.GameManager != gm) return;
+
+            YargLogger.LogInfo("Link: we left the synced song");
+            _session.Broadcast(KIND_LEFT, new JObject
+            {
+                ["song"] = _shared.SongHash,
+                ["play"] = _shared.PlayId,
+            });
+            EndSharedSong();
+        }
+
+        /// <summary>A friend left their play of a song: the one on our highways, or one we haven't joined.</summary>
+        private void OnFriendLeftSong(LinkMember member, JObject data)
+        {
+            if (IsFromSongPlay(member, data))
+            {
+                _songSetups[member.Id].Left = true;
+            }
+
+            // Nobody can join a play that's over
+            if (_remoteSetups.TryGetValue(member.Id, out var pending) && pending.IsPlay(data))
+            {
+                _remoteSetups.Remove(member.Id);
+            }
+        }
+
+        /// <summary>
+        /// Whether <paramref name="data"/> is from <paramref name="member"/>'s play of the synced song we're in:
+        /// the one whose setup we added. Anything else (a play they started again, or one for a song we started
+        /// alone) isn't about our song, even with the same song hash.
+        /// </summary>
+        private bool IsFromSongPlay(LinkMember member, JObject data) =>
+            _shared != null && member != null && (string) data["song"] == _shared.SongHash &&
+            _songSetups.TryGetValue(member.Id, out var setup) && !setup.Left && setup.IsPlay(data);
+
+        /// <summary>
+        /// Drop per-song state once we've left gameplay. <see cref="OnSongExited"/> usually has already.
         /// </summary>
         private void CheckSongEnded()
         {
             if (GlobalVariables.Instance.CurrentScene == SceneIndex.Gameplay) return;
             if (_shared == null) return;
 
+            EndSharedSong();
+        }
+
+        /// <summary>
+        /// Forget the synced song we were in. Setups that were used are done with; ones still waiting for us to
+        /// join are kept.
+        /// </summary>
+        private void EndSharedSong()
+        {
             _shared = null;
+            _songSetups.Clear();
+            _friendGoneSince.Clear();
+            _droppedFriends.Clear();
+            _lastInputsAt.Clear();
             EndBandMeter();
             EndClockSync();
             EndPauseSync();
-
-            // Setups that were used are done with; ones still waiting for us to join are kept
-            var used = new List<string>();
-            foreach (var (member, setup) in _remoteSetups)
-            {
-                if (setup.Taken) used.Add(member);
-            }
-            foreach (var member in used)
-            {
-                _remoteSetups.Remove(member);
-            }
         }
 
         #endregion
@@ -1256,6 +1324,18 @@ namespace YARG.Integration.Link
         {
             public readonly GameManager      GameManager;
             public readonly string           SongHash;
+
+            /// <summary>
+            /// This play of the song, in every message about it. Restarting is another play of the same song, so
+            /// friends can tell the two apart.
+            /// </summary>
+            public readonly string PlayId = Guid.NewGuid().ToString("N");
+
+            /// <summary>
+            /// Joiner: the host is in this play of the song, so it runs the band's meter and resumes pauses. Not
+            /// when we started the song alone (a restart, say) while the host was busy with another.
+            /// </summary>
+            public bool HostInPlay;
             public readonly List<BasePlayer> Players = new();
             public readonly Dictionary<BasePlayer, int> SentCounts = new();
             public double LastSendTime = double.NegativeInfinity;
@@ -1324,7 +1404,7 @@ namespace YARG.Integration.Link
                     });
                 }
 
-                bool noFail = SettingsManager.Settings.NoFail.Value != NoFailMode.Off;
+                bool noFail = GameManager.NoFailMode != NoFailMode.Off;
                 var data = new ReplayData(colorProfiles, cameraPresets, rockMeterPresets, noFail,
                     frames.ToArray(), Array.Empty<double>());
                 var bytes = data.Serialize().ToArray();
@@ -1339,6 +1419,7 @@ namespace YARG.Integration.Link
                 return new JObject
                 {
                     ["song"]    = SongHash,
+                    ["play"]    = PlayId,
                     ["players"] = players,
                     ["replay"]  = Convert.ToBase64String(bytes),
                 };
@@ -1386,6 +1467,7 @@ namespace YARG.Integration.Link
                 return new JObject
                 {
                     ["song"]    = SongHash,
+                    ["play"]    = PlayId,
                     ["seq"]     = _seq++,
                     // Every input up to this time has been recorded (before each player's calibration)
                     ["time"]    = gm.InputTime,
@@ -1411,12 +1493,18 @@ namespace YARG.Integration.Link
         private class RemoteSetup
         {
             public string SongHash;
+            /// <summary>Which play of the song (see <see cref="SharedSong.PlayId"/>).</summary>
+            public string Play;
             public ReplayData Data;
             public readonly List<RemoteInputFeed> Feeds = new();
             /// <summary>Player index → frame index in <see cref="Data"/>, or -1.</summary>
             public readonly List<int> FrameIndices = new();
-            /// <summary>Added to a song already.</summary>
-            public bool Taken;
+            /// <summary>The friend has left this play of the song: it ended, they quit, or they restarted.</summary>
+            public bool Left;
+
+            /// <summary>Whether a message is about this play of the song.</summary>
+            public bool IsPlay(JObject msg) =>
+                Play != null && (string) msg["song"] == SongHash && (string) msg["play"] == Play;
 
             /// <exception cref="Exception">The setup is malformed; the caller logs it.</exception>
             public static RemoteSetup Parse(string member, JObject msg)
@@ -1425,6 +1513,12 @@ namespace YARG.Integration.Link
                 if (setup.SongHash == null || setup.SongHash.Length > LinkLimits.MAX_ID_LENGTH)
                 {
                     throw new FormatException("bad song hash");
+                }
+
+                setup.Play = (string) msg["play"];
+                if (string.IsNullOrEmpty(setup.Play) || setup.Play.Length > LinkLimits.MAX_ID_LENGTH)
+                {
+                    throw new FormatException("bad play ID");
                 }
 
                 var bytes = Convert.FromBase64String((string) msg["replay"]);
@@ -1468,7 +1562,7 @@ namespace YARG.Integration.Link
 
             public void Receive(JObject msg, double now)
             {
-                if ((string) msg["song"] != SongHash) return;
+                if (!IsPlay(msg)) return;
 
                 double time = (double) msg["time"];
                 if (!IsSaneTime(time))
@@ -1562,9 +1656,8 @@ namespace YARG.Integration.Link
             }
 
             bool anyRemote = false;
-            foreach (var setup in _remoteSetups.Values)
+            foreach (var setup in _songSetups.Values)
             {
-                if (!setup.Taken) continue;
                 foreach (var feed in setup.Feeds)
                 {
                     anyRemote = true;

@@ -47,7 +47,14 @@ namespace YARG.Integration.Link
             public GameManager   GameManager;
             public EngineManager Engines;
             public string        SongHash;
+            public string        PlayId;
             public bool          IsHost;
+
+            /// <summary>
+            /// Joiner: the host's meter is the band's. Not when the host isn't in this play of the song, which
+            /// leaves our own meter in charge.
+            /// </summary>
+            public bool Remote;
 
             /// <summary>Host: failed players we've told everyone about (member ID, player index).</summary>
             public readonly HashSet<(string, int)> Failed = new();
@@ -76,7 +83,7 @@ namespace YARG.Integration.Link
         /// Whether the host's meter decides when this song fails, so this game's own meter mustn't.
         /// </summary>
         public bool IsBandMeterRemote(GameManager gameManager) =>
-            _band is { IsHost: false } && _band.GameManager == gameManager;
+            _band is { Remote: true } && _band.GameManager == gameManager;
 
         private void StartBandMeter(GameManager gameManager)
         {
@@ -86,7 +93,9 @@ namespace YARG.Integration.Link
                 GameManager = gameManager,
                 Engines = gameManager.EngineManager,
                 SongHash = _shared.SongHash,
+                PlayId = _shared.PlayId,
                 IsHost = _session.Role == LinkRole.Host,
+                Remote = _shared.HostInPlay,
             };
 
             if (_band.IsHost)
@@ -138,6 +147,7 @@ namespace YARG.Integration.Link
             _session.Broadcast(KIND_METER, new JObject
             {
                 ["song"] = _band.SongHash,
+                ["play"] = _band.PlayId,
                 ["happiness"] = _band.Engines.Happiness,
                 ["players"] = players,
             }, Delivery.Unreliable);
@@ -181,6 +191,7 @@ namespace YARG.Integration.Link
                 _session.Broadcast(KIND_PLAYER_FAILED, new JObject
                 {
                     ["song"] = _band.SongHash,
+                    ["play"] = _band.PlayId,
                     ["member"] = member,
                     ["index"] = index,
                 });
@@ -195,14 +206,14 @@ namespace YARG.Integration.Link
 
             _band.Failed.Clear();
             YargLogger.LogInfo("Link: the band was revived, telling friends");
-            _session.Broadcast(KIND_REVIVED, new JObject { ["song"] = _band.SongHash });
+            _session.Broadcast(KIND_REVIVED, new JObject { ["song"] = _band.SongHash, ["play"] = _band.PlayId });
         }
 
         /// <summary>Joiner: what the host's band meter decided.</summary>
         private void OnBandMeterData(LinkMember member, string kind, JObject data)
         {
-            if (_band is not { IsHost: false } || !member.IsHost) return;
-            if ((string) data["song"] != _band.SongHash) return;
+            if (_band is not { Remote: true } || !member.IsHost) return;
+            if ((string) data["song"] != _band.SongHash || !IsFromSongPlay(member, data)) return;
 
             var gm = _band.GameManager;
             if (gm == null || !gm.IsSongStarted || gm.PlayerHasFailed) return;
@@ -290,9 +301,8 @@ namespace YARG.Integration.Link
             }
 
             // Friends' players that have no highway here can still be on the host's meter
-            foreach (var setup in _remoteSetups.Values)
+            foreach (var setup in _songSetups.Values)
             {
-                if (!setup.Taken || setup.SongHash != band.SongHash) continue;
                 foreach (var feed in setup.Feeds)
                 {
                     if (feed.Mirrored) continue;

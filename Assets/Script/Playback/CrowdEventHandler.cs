@@ -118,7 +118,7 @@ namespace YARG.Playback
             _started = true;
             UpdateClapEnabled();
 
-            if (SettingsManager.Settings.NoFail.Value == NoFailMode.NoMeter || GlobalVariables.State.IsPractice)
+            if (_gameManager.NoFailMode == NoFailMode.NoMeter || GlobalVariables.State.IsPractice)
             {
                 return;
             }
@@ -209,7 +209,7 @@ namespace YARG.Playback
         private void OnSongFailed()
         {
             // TODO: Play crowd booing sound
-            if (SettingsManager.Settings.NoFail.Value != NoFailMode.Off || _gameManager.IsPractice)
+            if (_gameManager.NoFailMode != NoFailMode.Off || _gameManager.IsPractice)
             {
                 return;
             }
