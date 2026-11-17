@@ -156,6 +156,7 @@ The Unity window arguments (for example, `-screen-width` and `-window-mode`) now
 These fixes are not online code. Move them to a separate PR.
 
 - **`FocusHandler` at startup** (`368405d39`, `Persistent/FocusHandler.cs`): Unity sends the first `OnApplicationFocus` before `Start`. At that time `SettingsManager.Settings` is null. Thus a game that starts without focus logged a `NullReferenceException`, and "Mute on Focus Loss" and "Background FPS Cap" did not apply. The handler now waits until the settings load and then applies the current focus state. This is not the online pause-on-focus setting in `GameManager`.
+- **Unison display after a drop-out** (`Gameplay/HUD/UnisonBonus/UnisonDisplay.cs`): When a player drops out, `EngineManager.Unregister` removes the player from the next unisons. But `UnisonDisplay` selected its phrases one time, at the song start. Thus with "Multiplayer Only", the display still showed for a unison that had only one player, or no players. This also occurred in local play. The display now hides a phrase that has fewer players than the setting requires. Also, `ResetState` stopped the reset of all the players after a player without unison state (`return` instead of `continue`).
 
 ## Items for all areas
 
