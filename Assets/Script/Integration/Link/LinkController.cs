@@ -1499,6 +1499,11 @@ namespace YARG.Integration.Link
 
         #region Scoreboard
 
+        /// <summary>
+        /// The synced pause status, and the debugging scoreboard (Settings › Debug, off by default): the band's
+        /// score and stars are in the score box, and this adds per-player stats and each friend's connection
+        /// and clock sync.
+        /// </summary>
         private void OnGUI()
         {
             if (_shared == null || _session == null) return;
@@ -1509,14 +1514,14 @@ namespace YARG.Integration.Link
 
             DrawPauseStatus();
 
+            if (!(SettingsManager.Settings?.LinkDebugScoreboard.Value ?? false)) return;
+
             var rows = new List<(string Name, string Detail, int Score, bool Local, bool Stalled, string Connection)>();
 
-            // The band's total: every player's score, plus their band bonus, as their own game reports it
-            long bandTotal = 0;
+            // The band's total and stars are in the score box (GameManager.ScoreBoxScore)
             foreach (var player in _shared.Players)
             {
                 if (player == null) continue;
-                bandTotal += (long) player.Score + player.BandBonusScore;
                 rows.Add((player.Player.Profile.Name,
                     Detail(player.Stars, player.Combo, player.NotesHit, player.BaseStats.TotalNotes),
                     player.Score, true, false, null));
@@ -1529,7 +1534,6 @@ namespace YARG.Integration.Link
                 foreach (var feed in setup.Feeds)
                 {
                     anyRemote = true;
-                    bandTotal += (long) feed.Score + feed.BandBonus;
                     bool stalled = !gm.Paused && Now - feed.LastReceived > RemoteInputFeed.STALL_SECONDS;
                     var member = FindMember(feed.Member);
                     string connection = member == null ? null : DescribeConnection(member);
@@ -1554,7 +1558,6 @@ namespace YARG.Integration.Link
             _scoreboardStyle.fontSize = Mathf.RoundToInt(22 * scale);
 
             var text = new StringBuilder();
-            text.AppendLine($"Band  <b>{bandTotal:N0}</b>");
             foreach (var row in rows)
             {
                 string name = row.Local ? $"<b>{Escape(row.Name)}</b>" : Escape(row.Name);
