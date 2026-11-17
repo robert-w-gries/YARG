@@ -88,6 +88,7 @@ namespace YARG.Settings
                 nameof(Settings.ShowCursorTimer),
                 nameof(Settings.PauseOnDeviceDisconnect),
                 nameof(Settings.PauseOnFocusLoss),
+                new FieldMetadata(nameof(Settings.PauseOnFocusLossOnline), visibleWhen: IsLinkEnabled),
                 nameof(Settings.PauseOnMenuOpen),
                 nameof(Settings.MuteOnFocusLoss),
                 nameof(Settings.WrapAroundNavigation),

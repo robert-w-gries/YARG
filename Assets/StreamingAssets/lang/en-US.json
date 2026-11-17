@@ -2516,7 +2516,11 @@
             },
             "PauseOnFocusLoss": {
                 "Name": "Pause On Focus Loss",
-                "Description": "Pauses the game if it's tabbed out/loses focus in the middle of a song."
+                "Description": "Pauses the game if it's tabbed out/loses focus in the middle of a song. Ignored while online play is enabled."
+            },
+            "PauseOnFocusLossOnline": {
+                "Name": "Pause On Focus Loss in Online Mode",
+                "Description": "Pauses the game if it's tabbed out/loses focus in the middle of a song while online play is enabled. Pausing online pauses everyone in the song."
             },
             "PauseOnMenuOpen": {
                 "Name": "Pause On Menu Open",
