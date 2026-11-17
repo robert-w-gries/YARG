@@ -42,6 +42,7 @@ namespace YARG.Gameplay.HUD
         private          int                                _currentPhraseIndex;
         private          bool                               _isEditMode;
         private          double                             _lastVisualTime;
+        private          int                                _minPlayers;
 
         public int CurrentPhraseIndex => _currentPhraseIndex;
 
@@ -92,7 +93,15 @@ namespace YARG.Gameplay.HUD
 
             _lastVisualTime = time;
 
-            UpdateScale(currentPhrase, time);
+            if (HasEnoughParticipants(currentPhrase))
+            {
+                UpdateScale(currentPhrase, time);
+            }
+            else if (!_isEditMode && _parent.activeSelf)
+            {
+                // A participant dropped out, so this phrase no longer qualifies for display
+                _parent.SetActive(false);
+            }
 
             if (time > currentPhrase.TransitionOut.TimeEnd)
             {
@@ -110,7 +119,7 @@ namespace YARG.Gameplay.HUD
                 return;
             }
 
-            int minPlayers = SettingsManager.Settings.UnisonDisplay.Value switch
+            _minPlayers = SettingsManager.Settings.UnisonDisplay.Value switch
             {
                 UnisonDisplaySetting.Always          => 1,
                 UnisonDisplaySetting.MultiplayerOnly => 2,
@@ -126,14 +135,14 @@ namespace YARG.Gameplay.HUD
             var maxParticipants = GameManager.EngineManager.UnisonEvents.Max(e => e.PartCount);
 
             if (SettingsManager.Settings.UnisonDisplay.Value == UnisonDisplaySetting.Disabled ||
-                maxParticipants < minPlayers)
+                maxParticipants < _minPlayers)
             {
                 // Disable display now if there would never be enough participants to show the display
                 gameObject.SetActive(false);
                 return;
             }
 
-            InitializePhrases(minPlayers);
+            InitializePhrases(_minPlayers);
 
             if (_phrases.Count == 0)
             {
@@ -181,6 +190,12 @@ namespace YARG.Gameplay.HUD
                 _activeUnisonObject.AddParticipant(engineContainer.EngineId, phrase.NoteCount);
             }
         }
+
+        /// <summary>
+        /// Players who drop out are removed from the shared <see cref="EngineManager.UnisonEvent"/>s, so a phrase that
+        /// had enough participants at song start may no longer have them.
+        /// </summary>
+        private bool HasEnoughParticipants(UnisonPhraseData phrase) => phrase.Event.PartCount >= _minPlayers;
 
         private void PositionDisplay()
         {
@@ -519,7 +534,7 @@ namespace YARG.Gameplay.HUD
                 _activeUnisonObject.AddParticipant(participantId, phrase.NoteCount);
                 if (!_unisonState.TryGetValue(participantId, out var unisonState))
                 {
-                    return;
+                    continue;
                 }
 
                 unisonState.NotesHitInCurrentPhrase = 0;
