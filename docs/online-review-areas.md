@@ -151,6 +151,12 @@ Examine these items:
 
 The Unity window arguments (for example, `-screen-width` and `-window-mode`) now override the saved display settings at startup. This change is not online code. Move it to a separate PR.
 
+## Unrelated fixes
+
+These fixes are not online code. Move them to a separate PR.
+
+- **`FocusHandler` at startup** (`368405d39`, `Persistent/FocusHandler.cs`): Unity sends the first `OnApplicationFocus` before `Start`. At that time `SettingsManager.Settings` is null. Thus a game that starts without focus logged a `NullReferenceException`, and "Mute on Focus Loss" and "Background FPS Cap" did not apply. The handler now waits until the settings load and then applies the current focus state. This is not the online pause-on-focus setting in `GameManager`.
+
 ## Items for all areas
 
 - **Layers:** Each layer uses only the layer below it: Rust library (1), transport (3), session (4), controller (6), game hooks (7 to 10). The session and transport code must not use Unity or gameplay types.
