@@ -1508,7 +1508,7 @@ namespace YARG.Gameplay.Player
 
         protected void OnHappinessNearFail()
         {
-            if (SettingsManager.Settings.NoFail.Value == NoFailMode.Off && !GameManager.IsPractice)
+            if (GameManager.NoFailMode == NoFailMode.Off && !GameManager.IsPractice)
             {
                 TrackMaterial.FailState = 1f;
             }
@@ -1516,7 +1516,7 @@ namespace YARG.Gameplay.Player
 
         protected void OnPlayerFailed(int engineId)
         {
-            if (SettingsManager.Settings.NoFail.Value != NoFailMode.Off
+            if (GameManager.NoFailMode != NoFailMode.Off
                 || engineId != EngineContainer.EngineId
                 || GameManager.IsPractice)
             {

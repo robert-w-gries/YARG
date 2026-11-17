@@ -20,8 +20,37 @@ namespace YARG.Gameplay.HUD
             PauseMenuManager = FindAnyObjectByType<PauseMenuManager>();
         }
 
+        /// <summary>
+        /// Options that would leave friends behind in online play: starting the song again (alone, since
+        /// friends are mid-song), practice, skipping to the next song, and no fail (the band's meter is shared).
+        /// </summary>
+        private static readonly string[] OnlineHiddenOptions =
+        {
+            nameof(Restart), nameof(TogglePractice), nameof(FailPause.EnableNoFail),
+            nameof(QuickSettings.ToggleNoFail), nameof(SetlistPause.Skip),
+        };
+
+        /// <summary>In online play, hide the options in <see cref="OnlineHiddenOptions"/>.</summary>
+        protected void HideOnlineOptions()
+        {
+            if (GameManager == null || !GameManager.IsOnlinePlay)
+            {
+                return;
+            }
+
+            foreach (var button in GetComponentsInChildren<NavigatableButton>(true))
+            {
+                if (!button.Calls(OnlineHiddenOptions)) continue;
+
+                button.gameObject.SetActive(false);
+                button.NavigationGroup?.RemoveNavigatable(button);
+            }
+        }
+
         protected virtual void OnEnable()
         {
+            HideOnlineOptions();
+
             if (Navigator.Instance == null)
             {
                 return;

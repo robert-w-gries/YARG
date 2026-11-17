@@ -14,12 +14,12 @@ namespace YARG.Integration.Link.Session
     /// <para>
     /// Each transport message is one UTF-8 JSON object with a <c>"t"</c> type tag, for example
     /// <c>{"t":"start","delayMs":2000}</c>. The first message on every connection is a <see cref="HelloMessage"/>;
-    /// peers whose <see cref="LinkProtocol.VERSION"/> or game version differ are refused with a
-    /// <see cref="ByeMessage"/>.
+    /// peers whose game version differs are refused with a <see cref="ByeMessage"/>.
     /// </para>
     /// <para>
-    /// Within one protocol version, messages may gain optional fields, and unknown message types are
-    /// ignored, so additions don't need a version bump. Removing or changing a field does.
+    /// There's no separate protocol version: game versions must match exactly, and any change to these
+    /// messages ships in a new game version. (Local builds with uncommitted changes share their commit's
+    /// version, so mixing them can fail in other ways.)
     /// </para>
     /// <para>
     /// The topology is a star: joiners connect to the host only. The host runs the synced-start coordinator
@@ -28,9 +28,6 @@ namespace YARG.Integration.Link.Session
     /// </remarks>
     public static class LinkProtocol
     {
-        /// <summary>Bump on any incompatible change to the messages below.</summary>
-        public const int VERSION = 1;
-
         private static readonly JsonSerializer Serializer = JsonSerializer.Create(new JsonSerializerSettings
         {
             ContractResolver = new CamelCasePropertyNamesContractResolver(),
@@ -139,7 +136,6 @@ namespace YARG.Integration.Link.Session
     /// <summary>Both ways, first on every connection.</summary>
     public sealed class HelloMessage : LinkMessage
     {
-        public int    Protocol;
         /// <summary>The game build; peers must match exactly, since remote highways replay inputs.</summary>
         public string Game;
         /// <summary>Stable for the lifetime of a session; identifies the member to everyone.</summary>

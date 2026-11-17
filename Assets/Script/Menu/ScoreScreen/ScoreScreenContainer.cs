@@ -23,6 +23,9 @@ namespace YARG.Menu.ScoreScreen
 
         public double MeanAverageOffset;
 
+        /// <summary>The song was played with no fail on (online play ignores the setting).</summary>
+        public bool NoFail;
+
 #nullable enable
         public ReplayInfo? ReplayInfo;
         public bool? ReplayWasConsistent;

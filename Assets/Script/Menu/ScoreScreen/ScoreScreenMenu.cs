@@ -24,6 +24,7 @@ using YARG.Core.Replays.Analyzer;
 using YARG.Core.Song;
 using YARG.Localization;
 using YARG.Menu.MusicLibrary;
+using YARG.Integration.Link;
 using YARG.Menu.Navigation;
 using YARG.Menu.Persistent;
 using YARG.Scores;
@@ -667,8 +668,10 @@ namespace YARG.Menu.ScoreScreen
             {
                 buttons.Add(_viewReplayButtonEntry);
             }
-            else
+            else if (LinkController.Instance is not { ShouldHoldForStart: true })
             {
+                // Online, friends choose the next song together from the library: restarting would start it
+                // without the ones still here
                 buttons.Add(_restartButtonEntry);
             }
 

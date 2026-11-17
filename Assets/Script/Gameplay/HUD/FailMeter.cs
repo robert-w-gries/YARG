@@ -76,9 +76,10 @@ namespace YARG.Gameplay.HUD
 
         private const float OFFSCREEN_Y = -400f;
 
-        private void Awake()
+        /// <summary>Move the meter out of sight when this song plays with no meter.</summary>
+        private void HideIfNoMeter(GameManager gameManager)
         {
-            if (SettingsManager.Settings.NoFail.Value == NoFailMode.NoMeter)
+            if (gameManager.NoFailMode == NoFailMode.NoMeter)
             {
                 _meterContainer.transform.position = new Vector3(
                     _meterContainer.transform.position.x,
@@ -106,6 +107,7 @@ namespace YARG.Gameplay.HUD
         {
             _gameManager = gameManager;
             _engineManager = engineManager;
+            HideIfNoMeter(gameManager);
             // In an online session that we aren't hosting, the host's meter decides who's shown and where
             _players = gameManager.OnlineBandMeterMarkers() ?? LocalMarkers(engineManager, gameManager);
 

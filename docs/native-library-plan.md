@@ -365,7 +365,7 @@ Sources: iroh docs on [relays](https://docs.iroh.computer/concepts/relays),
 | **Panics or crashes inside the game process** | `catch_unwind` around every exported function, no `panic=abort`, errors returned as status codes. Log through a polled log-event channel. |
 | **Threading** | Rust never calls into C#. C# polls from `Update()`. This also keeps a future IL2CPP switch easy (the project is Mono today). |
 | **Binary size** (iroh + tokio + rustls) | `opt-level="s"`, `lto="fat"`, `strip=true`, `panic="unwind"`, iroh default features trimmed. Measure early; expect several MB per platform, about double for the macOS universal file. |
-| **Version mismatch between friends** | Version handshake on connect: protocol version plus game build. Refuse incompatible peers with a clear message. |
+| **Version mismatch between friends** | Version handshake on connect: the exact game build. Refuse incompatible peers with a clear message. |
 | **Discord Game SDK is deprecated** | Check that Activity join/invite still works in the bundled `DiscordGameSDK`. The long-term path is Discord's Social SDK. Keep Discord glue isolated so invites also work through a plain copyable ticket. |
 | **n0's public relays aren't meant for production** (rate-limited, no uptime guarantee, can change at any time) | Fine for the MVP. Before release, run our own relay with n0's as a fallback; see [Relays and address lookup](#relays-and-address-lookup). |
 | **Song matching across machines** | Today we match on exact `SongEntry.Hash`. Look at soft-hash matching (see the overlapping work above) for charts that differ trivially. |
@@ -429,7 +429,7 @@ Phase 1 notes (2026-11-14):
   `Tests/YARG.Link.Tests`: `dotnet test Tests/YARG.Link.Tests`.
 - Topology is still a host-centred star (question 3 answered "host-authoritative" for now). The host
   relays game data between joiners, and the roster carries every member's scene.
-- Handshake: a `hello` with protocol version, exact game version, member ID, and a host flag. Mismatches
+- Handshake: a `hello` with the exact game version, member ID, and a host flag. Mismatches
   are refused with a `bye` that carries the reason.
 - Until there is a lobby UI, sessions are set up with launch options: `-link-join <ticket>`,
   `-link-port`, `-link-name`, `-link-lan` (or `YARG_LINK_*` environment variables in the Editor).
@@ -677,12 +677,20 @@ the song, and the host's no fail setting is the one that counts.
   power doesn't raise the client's, because the client's game doesn't share them. Fails and saves stay
   correct on both games; scores differ slightly when star power overlaps. A possible fix is a small
   YARG.Core option to register an engine for the fail meter only, which needs the maintainers' go-ahead.
-- **The fail menu only affects the local game.** "Restart" and "continue with no fail" aren't synced.
+- **Online play hides the menu options that would leave friends behind.** When friends are in the session,
+  gameplay sets `GameManager.IsOnlinePlay`, and the pause, fail and quick settings menus hide Restart,
+  Practice, Skip and the no fail options (`GenericPause.HideOnlineOptions`, matched by the method each
+  button calls). The score screen hides Restart too. The no fail setting is ignored in online play
+  (`GameManager.NoFailMode` is always `Off`), because the band's meter is shared. Back to Library stays.
 - **Pause is synced, but the pause menu's other options aren't.** Anyone pausing pauses everyone
   (`LinkController.PauseSync`, `PauseCoordinator`). Resume marks a player ready; once everyone is, the
   host resumes all games from one input time a second before the latest pause, at the same moment.
-  Restart, quit and settings in the pause menu still only affect the local game; a friend who quits to
-  the menu stops being waited for, and the others carry on without them.
+  Quitting and settings in the pause menu only affect the local game; a friend who quits to the menu
+  stops being waited for, and the others carry on without them.
+- **Each play of a song is separate.** Every message about a synced song carries a play ID
+  (`SharedSong.PlayId`) next to the song hash, and a game sends `left` when its `GameManager` is destroyed.
+  Messages from another play of the same song are ignored, so a game that reloads gameplay (which the
+  hidden options above did) can't mix with friends' songs. Restarting together isn't supported.
 - **Revives near the fail moment can disagree by a fraction of a second.** Mirrors run about 150 ms behind
   their owner, so star power used right around a fail or revive can count as a revive on one game and as
   plain star power on another. Fails, saves and scores stay with the host and each player's own game;
