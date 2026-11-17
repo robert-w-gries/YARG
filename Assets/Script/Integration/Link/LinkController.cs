@@ -191,6 +191,7 @@ namespace YARG.Integration.Link
             if (!IsEnabled)
             {
                 if (_session != null) Close();
+                _hostGone = null;
                 LinkLobby.CloseIfOpen();
                 return;
             }
@@ -203,7 +204,12 @@ namespace YARG.Integration.Link
                 OpenFromLaunchOptions();
             }
 
-            if (_session == null) return;
+            if (_session == null)
+            {
+                // A song whose session ended still counts down to leaving
+                UpdateHostLoss();
+                return;
+            }
 
             if (_joinTicket != null && !_session.IsConnected && !_session.IsJoining && Now >= _nextJoinTime)
             {
@@ -223,6 +229,8 @@ namespace YARG.Integration.Link
             UpdateBandMeter();
             UpdatePauseSync();
             UpdateClockSync();
+            UpdateDepartedFriends();
+            UpdateHostLoss();
         }
 
         private void LateUpdate()
@@ -722,6 +730,10 @@ namespace YARG.Integration.Link
             _remoteSetups.Clear();
             _paths.Clear();
             _shared = null;
+            _friendGoneSince.Clear();
+            _droppedFriends.Clear();
+            _resendDropOuts = false;
+            _lastInputsAt.Clear();
             EndBandMeter();
             EndClockSync();
             EndPauseSync();
@@ -730,6 +742,7 @@ namespace YARG.Integration.Link
         private void OnMemberJoined(LinkMember member)
         {
             _lastProblem = null;
+            ResendDropOuts();
             ToastManager.ToastInformation(member.IsHost && _session.Role == LinkRole.Join
                 ? $"Joined {member.Name}'s online session"
                 : $"{member.Name} joined the online session");
@@ -776,6 +789,14 @@ namespace YARG.Integration.Link
                     ByeCodes.LEFT => "The host ended the online session. If they host again, ask them for the new invite code.",
                     _             => Sentence(disconnect.Reason),
                 };
+
+                // A joiner mid-song can't carry on without the host for long
+                OnSessionEndedInSong(disconnect.Code switch
+                {
+                    ByeCodes.KICKED => "You were removed from the online session",
+                    ByeCodes.LEFT   => "The host ended the online session",
+                    _               => "Lost the online session",
+                });
 
                 Close();
                 ShowProblem(title, message);
@@ -1101,6 +1122,7 @@ namespace YARG.Integration.Link
                             existing.Receive(data, Now);
                         }
                         OnClockSample(member, data);
+                        NoteInputsFrom(member);
                         break;
 
                     case KIND_FAILED:
@@ -1120,6 +1142,14 @@ namespace YARG.Integration.Link
                     case KIND_PAUSE:
                     case KIND_RESUME:
                         OnPauseData(member, kind, data);
+                        break;
+
+                    case KIND_END_SONG:
+                        OnEndSongData(member, data);
+                        break;
+
+                    case KIND_DROPPED:
+                        OnDroppedData(member, data);
                         break;
                 }
             }
@@ -1506,13 +1536,17 @@ namespace YARG.Integration.Link
         /// </summary>
         private void OnGUI()
         {
-            if (_shared == null || _session == null) return;
             if (GlobalVariables.Instance == null || GlobalVariables.Instance.CurrentScene != SceneIndex.Gameplay) return;
+
+            // Even after the session ended, a song without its host shows its countdown
+            bool hostGone = DrawHostGone();
+
+            if (_shared == null || _session == null) return;
 
             var gm = _shared.GameManager;
             if (gm == null || !gm.IsSongStarted) return;
 
-            DrawPauseStatus();
+            if (!hostGone) DrawPauseStatus();
 
             if (!(SettingsManager.Settings?.LinkDebugScoreboard.Value ?? false)) return;
 
