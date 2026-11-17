@@ -21,6 +21,21 @@ namespace YARG.Gameplay.HUD
     }
     public class FailMeter : MonoBehaviour
     {
+        /// <summary>
+        /// One player's icon on the meter.
+        /// </summary>
+        public sealed class Marker
+        {
+            public string SpriteName;
+            public Color  Color = Color.white;
+
+            /// <summary>The player's meter value, or <c>null</c> to hide their icon.</summary>
+            public Func<float?> Happiness;
+
+            /// <summary>Whether the player is in star power, for the meter's glow.</summary>
+            public Func<bool> IsStarPowerActive;
+        }
+
         [SerializeField]
         private GameObject _meterContainer;
         [FormerlySerializedAs("Slider")]
@@ -51,6 +66,7 @@ namespace YARG.Gameplay.HUD
         private Tweener   _meterGlowFillTweener;
         private Sequence  _meterGlowPulseSequence;
         private float[]   _previousPlayerHappiness;
+        private float?[]  _currentHappiness;
         private float     _previousBandHappiness;
         private bool      _sp;
 
@@ -75,7 +91,7 @@ namespace YARG.Gameplay.HUD
         private EngineManager _engineManager;
         private GameManager _gameManager;
 
-        private readonly List<EngineManager.EngineContainer> _players = new();
+        private List<Marker> _players;
 
         // Allows some overlap
         private const float HAPPINESS_COLLISION_RANGE = 0.06f;
@@ -90,7 +106,8 @@ namespace YARG.Gameplay.HUD
         {
             _gameManager = gameManager;
             _engineManager = engineManager;
-            _players.AddRange(engineManager.Engines);
+            // In an online session that we aren't hosting, the host's meter decides who's shown and where
+            _players = gameManager.OnlineBandMeterMarkers() ?? LocalMarkers(engineManager, gameManager);
 
             _playerSliders = new Slider[_players.Count];
             _needleSliders = new Slider[_players.Count];
@@ -98,6 +115,7 @@ namespace YARG.Gameplay.HUD
             _playerHappinessTweeners = new Tweener[_players.Count];
             _needleHappinessTweeners = new Tweener[_players.Count];
             _previousPlayerHappiness = new float[_players.Count];
+            _currentHappiness = new float?[_players.Count];
             _xPosVectors = new Vector2[_players.Count];
 
             // Cache tweens for later use
@@ -156,11 +174,13 @@ namespace YARG.Gameplay.HUD
                 _needleSliders[i].handleRect.DOAnchorPosX(SPRITE_INITIAL_OFFSET, 0.125f).SetAutoKill(false).SetLink(_needleSliders[i].gameObject);
 
                 var handleImage = _playerSliders[i].handleRect.GetComponentInChildren<Image>();
-                var spriteName = _players[i].GetInstrumentSprite(_gameManager.Song);
+                var spriteName = _players[i].SpriteName;
 
-                var sprite = Addressables.LoadAssetAsync<Sprite>(spriteName).WaitForCompletion();
-                handleImage.sprite = sprite;
-                handleImage.color = _gameManager.Players[i].Player.GetGameplayIconColor();
+                if (!string.IsNullOrEmpty(spriteName))
+                {
+                    handleImage.sprite = Addressables.LoadAssetAsync<Sprite>(spriteName).WaitForCompletion();
+                }
+                handleImage.color = _players[i].Color;
 
                 _playerSliders[i].value = 0.01f;
                 _needleSliders[i].value = 0.01f;
@@ -168,12 +188,32 @@ namespace YARG.Gameplay.HUD
                 _needleSliders[i].gameObject.SetActive(true);
 
                 // Cached for reuse because starting a new tween generates garbage
-                _playerHappinessTweeners[i] = _playerSliders[i].DOValue(_players[i].Happiness, 0.5f).SetAutoKill(false).SetLink(_playerSliders[i].gameObject);
-                _needleHappinessTweeners[i] = _needleSliders[i].DOValue(_players[i].Happiness, 0.5f).SetAutoKill(false).SetLink(_needleSliders[i].gameObject);
-                _previousPlayerHappiness[i] = _players[i].Happiness;
+                float happiness = _players[i].Happiness() ?? 0f;
+                _playerHappinessTweeners[i] = _playerSliders[i].DOValue(happiness, 0.5f).SetAutoKill(false).SetLink(_playerSliders[i].gameObject);
+                _needleHappinessTweeners[i] = _needleSliders[i].DOValue(happiness, 0.5f).SetAutoKill(false).SetLink(_needleSliders[i].gameObject);
+                _previousPlayerHappiness[i] = happiness;
             }
 
             YargLogger.LogDebug("Initialized fail meter");
+        }
+
+        /// <summary>This game's own meter: one icon per engine in <paramref name="engineManager"/>.</summary>
+        private static List<Marker> LocalMarkers(EngineManager engineManager, GameManager gameManager)
+        {
+            var markers = new List<Marker>();
+            var engines = engineManager.Engines;
+            for (int i = 0; i < engines.Count; i++)
+            {
+                var container = engines[i];
+                markers.Add(new Marker
+                {
+                    SpriteName = container.GetInstrumentSprite(gameManager.Song),
+                    Color = gameManager.Players[i].Player.GetGameplayIconColor(),
+                    Happiness = () => engineManager.IsRegistered(container) ? container.Happiness : null,
+                    IsStarPowerActive = () => container.BaseEngine.BaseStats.IsStarPowerActive,
+                });
+            }
+            return markers;
         }
 
         // Update is called once per frame
@@ -196,16 +236,23 @@ namespace YARG.Gameplay.HUD
                 UpdateMeterFill();
             }
 
+            for (var i = 0; i < _players.Count; i++)
+            {
+                _currentHappiness[i] = _players[i].Happiness();
+            }
+
             bool anyPlayerInSp = false;
             for (var i = _players.Count - 1; i >= 0; i--)
             {
-                if (!_engineManager.IsRegistered(_players[i]))
+                if (_currentHappiness[i] is not { } current)
                 {
                     HidePlayerMeter(i);
                     continue;
                 }
 
-                if (_players[i].BaseEngine.BaseStats.IsStarPowerActive)
+                ShowPlayerMeter(i);
+
+                if (_players[i].IsStarPowerActive())
                 {
                     anyPlayerInSp = true;
                 }
@@ -213,13 +260,13 @@ namespace YARG.Gameplay.HUD
                 // Check if we will overlap another icon
                 for (var j = i; j >= 0; j--)
                 {
-                    if (j == i || !_engineManager.IsRegistered(_players[j]))
+                    if (j == i || _currentHappiness[j] is not { } other)
                     {
                         // Ignore self
                         continue;
                     }
 
-                    if (Math.Abs(_players[i].Happiness - _players[j].Happiness) < HAPPINESS_COLLISION_RANGE)
+                    if (Math.Abs(current - other) < HAPPINESS_COLLISION_RANGE)
                     {
                         overlap++;
                     }
@@ -234,10 +281,10 @@ namespace YARG.Gameplay.HUD
                 }
 
                 // This we can not do if the current player's happiness hasn't changed
-                if (_previousPlayerHappiness[i] != _players[i].Happiness)
+                if (_previousPlayerHappiness[i] != current)
                 {
-                    _playerHappinessTweeners[i].ChangeValues(_playerSliders[i].value, _players[i].Happiness, 0.1f);
-                    _needleHappinessTweeners[i].ChangeValues(_needleSliders[i].value, _players[i].Happiness, 0.1f);
+                    _playerHappinessTweeners[i].ChangeValues(_playerSliders[i].value, current, 0.1f);
+                    _needleHappinessTweeners[i].ChangeValues(_needleSliders[i].value, current, 0.1f);
 
                     // Not sure if strictly necessary, but it seems like good practice to not try to play a playing tween
                     if (_playerHappinessTweeners[i].IsComplete())
@@ -259,7 +306,7 @@ namespace YARG.Gameplay.HUD
                     }
                 }
 
-                _previousPlayerHappiness[i] = _players[i].Happiness;
+                _previousPlayerHappiness[i] = current;
             }
 
             UpdateMeterGlow(anyPlayerInSp);
@@ -356,6 +403,23 @@ namespace YARG.Gameplay.HUD
             {
                 // Move offscreen
                 _meterPositionTweener.PlayForward();
+            }
+        }
+
+        /// <summary>
+        /// Show an icon again. Online, a friend's icon can come back, for example when the host's meter
+        /// starts reporting them.
+        /// </summary>
+        private void ShowPlayerMeter(int index)
+        {
+            if (!_playerSliders[index].gameObject.activeSelf)
+            {
+                _playerSliders[index].gameObject.SetActive(true);
+                _needleSliders[index].gameObject.SetActive(true);
+                _xposTweeners[index].Play();
+
+                // Move the icon to its current value, even if that's where it was hidden
+                _previousPlayerHappiness[index] = float.NaN;
             }
         }
 

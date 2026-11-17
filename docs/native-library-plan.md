@@ -660,7 +660,11 @@ truth for the meter:
 
 Current state (2026-11-15): implemented as above. The host's `EngineManager` events drive
 `player_failed` (sent once per failed player until a revive) and `revived`. The meter value goes out about
-ten times a second as an unreliable `meter` message. On a client, a failed player's highway goes down
+ten times a second as an unreliable `meter` message. It also carries each counted player's value, grouped by
+member (`players: { member: [happiness or null, ...] }` by setup index). A client's fail meter shows an
+icon for every player in that list, at the host's values: its own players, friends' mirrored players, and
+friends' players with no highway there (vocals, pro guitar), which get their instrument's icon. Until the
+first `meter` message, a client shows its own players at its own values. On a client, a failed player's highway goes down
 (`TrackPlayer.FailFromLink`), and every engine waits for a revive (`EngineContainer.PlayerHasFailed`), so
 the next star power activation saves the band, as in local multiplayer. Only the host's meter can fail
 the song, and the host's no fail setting is the one that counts.
@@ -674,8 +678,11 @@ the song, and the host's no fail setting is the one that counts.
   correct on both games; scores differ slightly when star power overlaps. A possible fix is a small
   YARG.Core option to register an engine for the fail meter only, which needs the maintainers' go-ahead.
 - **The fail menu only affects the local game.** "Restart" and "continue with no fail" aren't synced.
-- **Pause isn't synced.** If a friend pauses, their highway freezes on everyone else's screen until
-  they resume.
+- **Pause is synced, but the pause menu's other options aren't.** Anyone pausing pauses everyone
+  (`LinkController.PauseSync`, `PauseCoordinator`). Resume marks a player ready; once everyone is, the
+  host resumes all games from one input time a second before the latest pause, at the same moment.
+  Restart, quit and settings in the pause menu still only affect the local game; a friend who quits to
+  the menu stops being waited for, and the others carry on without them.
 - **Revives near the fail moment can disagree by a fraction of a second.** Mirrors run about 150 ms behind
   their owner, so star power used right around a fail or revive can count as a revive on one game and as
   plain star power on another. Fails, saves and scores stay with the host and each player's own game;

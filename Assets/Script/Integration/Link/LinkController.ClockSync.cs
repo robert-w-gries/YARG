@@ -89,6 +89,9 @@ namespace YARG.Integration.Link
             if (gm == null || !gm.IsSongStarted || gm.Paused) return;
             if ((string) data["song"] != _shared.SongHash) return;
 
+            // Right after a synced resume, a friend's message can still be from before theirs
+            if (Now < _clockHoldUntil) return;
+
             // Older games don't send a clock; their watermark is close enough (a frame or so early)
             double? remote = (double?) data["clock"] ?? (double?) data["time"];
             if (remote is not { } remoteTime) return;
