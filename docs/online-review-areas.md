@@ -100,7 +100,7 @@ Examine these items:
 
 - **Size:** The class has 1,575 lines. Must it be divided before the merge?
 - **Modes:** `CanMirror` does not send vocals or pro guitar. The plan gives the causes.
-- **Scoreboard:** The IMGUI scoreboard is temporary. Is a HUD element necessary before the merge?
+- **Scoreboard:** The IMGUI scoreboard is a debugging aid, off by default (Settings › Debug › Online link scoreboard, shown while the link is enabled). The band's score and stars are in the normal score box.
 
 ### 7. Friends' tracks
 
@@ -125,7 +125,7 @@ Examine these items:
 - **Star power:** On the host, friends' engines also change the star power multiplier and unisons. Thus scores can be different. A fix needs a YARG.Core change (open question 5).
 - **Clients:** The main manager of a client has fail off. Only the meter of the host can fail the song.
 - **Meter icons:** On a client, `FailMeter` shows an icon for each player in the host's `meter` message, at the host's value (`LinkController.BandMeterMarkers`). A player that the host does not count has no icon.
-- **Band total:** The scoreboard shows the band total. It adds the score and band bonus that each player's own game reports. It is not in `BandScore` or in saved scores.
+- **Band total:** The score box shows the band total and stars (`GameManager.ScoreBoxScore` and `ScoreBoxStars`). It adds the score and band bonus that each player's own game reports, for players with a track, and gets stars from all their cutoffs. It is not in `BandScore` or in saved scores.
 
 ### 9. Song time and synced start
 

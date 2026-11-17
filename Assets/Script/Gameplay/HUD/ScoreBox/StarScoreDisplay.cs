@@ -86,7 +86,7 @@ namespace YARG.Gameplay.HUD
                 }
 
                 GlobalAudioHandler.PlaySoundEffect(SfxSample.StarGain);
-                YargLogger.LogFormatDebug("Gained star {0} at score {1}", topStar, GameManager.BandScore);
+                YargLogger.LogFormatDebug("Gained star {0} at score {1}", topStar, GameManager.ScoreBoxScore);
             }
 
             if (_currentStar < _starObjects.Length)
