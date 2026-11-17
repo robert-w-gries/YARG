@@ -1094,7 +1094,12 @@ namespace YARG.Gameplay
 
         private void OnApplicationFocus(bool hasFocus)
         {
-            if (!hasFocus && !Paused && SettingsManager.Settings.PauseOnFocusLoss.Value)
+            // Online, a pause stops the whole band, so it has its own setting (off by default)
+            var pauseOnFocusLoss = LinkController.IsEnabled
+                ? SettingsManager.Settings.PauseOnFocusLossOnline.Value
+                : SettingsManager.Settings.PauseOnFocusLoss.Value;
+
+            if (!hasFocus && !Paused && pauseOnFocusLoss)
             {
                 SetPaused(true);
             }

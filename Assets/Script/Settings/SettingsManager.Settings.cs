@@ -292,6 +292,7 @@ namespace YARG.Settings
 
             public ToggleSetting PauseOnDeviceDisconnect { get; } = new(true);
             public ToggleSetting PauseOnFocusLoss { get; } = new(true);
+            public ToggleSetting PauseOnFocusLossOnline { get; } = new(false);
             public ToggleSetting PauseOnMenuOpen { get; } = new(true);
             public ToggleSetting MuteOnFocusLoss { get; } = new(false);
 
