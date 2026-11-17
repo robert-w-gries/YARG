@@ -1953,6 +1953,10 @@
                 "Name": "Enable online link",
                 "Description": "Plays songs together with friends over the internet, showing their highways and scores. Adds \"Online\" to the main menu, where you host a session or join one with a friend's invite code. While friends are in the session, songs wait on the loading screen until everyone is ready."
             },
+            "LinkDebugScoreboard": {
+                "Name": "Online link scoreboard",
+                "Description": "Shows a box on the left during online songs with each player's score, stars, combo and notes hit, and each friend's connection, round trip and clock sync. For debugging online play; the band's score and stars are always in the score box."
+            },
             "RB3EEnabled": {
                 "Name": "Enable RB3E Stage Kit data stream",
                 "Description": "Enables sending of RB3E style stage kit information packets over the network, for hardware such as StageKitPied."

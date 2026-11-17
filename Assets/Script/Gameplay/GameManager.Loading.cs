@@ -256,6 +256,12 @@ namespace YARG.Gameplay
             YargLogger.LogFormatDebug("Calculating star cutoffs for {0} players", _players.Count);
             EngineManager.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(LocalStarScoreThresholds());
             YargLogger.LogFormatDebug("Star score thresholds: {0}", string.Join(", ", EngineManager.StarScoreThresholds));
+            UpdateOnlineBandCutoffs();
+            if (_onlineBand != null)
+            {
+                YargLogger.LogFormatDebug("Online band star score thresholds: {0}",
+                    string.Join(", ", _onlineBand.StarScoreThresholds));
+            }
 
 
             // Set up the crowd stem so it can be restored after muting (if it exists)

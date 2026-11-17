@@ -292,6 +292,7 @@ namespace YARG.Settings
                 nameof(Settings.InputDeviceLogging),
                 nameof(Settings.ShowAdvancedMusicLibraryOptions),
                 nameof(Settings.MinimumLogLevel),
+                new FieldMetadata(nameof(Settings.LinkDebugScoreboard), visibleWhen: IsLinkEnabled),
             },
             new MetadataTab("Experimental", icon: "Beaker")
             {
@@ -339,6 +340,8 @@ namespace YARG.Settings
 
         private static bool IsWindows() => Application.platform is RuntimePlatform.WindowsPlayer or
             RuntimePlatform.WindowsEditor;
+
+        private static bool IsLinkEnabled() => Settings?.LinkEnable.Value ?? false;
 
         private static bool IsAsioVisible() => IsWindows() && Settings?.OutputMode.Value == AudioOutputMode.Asio;
 

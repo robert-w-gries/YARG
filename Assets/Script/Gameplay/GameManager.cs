@@ -222,6 +222,23 @@ namespace YARG.Gameplay
 
         public int BandMultiplier => EngineManager.BandMultiplier;
 
+        // Online link: the whole band's score and stars, friends' players included, for the score box. Only
+        // used for display; this game's own players' score is still what gets saved. Null without friends'
+        // tracks in the song.
+        private EngineManager _onlineBand;
+
+        /// <summary>
+        /// The band score the score box shows: <see cref="BandScore"/>, or in an online session, the whole
+        /// band's, counting each friend's players as their own game reports them.
+        /// </summary>
+        public int ScoreBoxScore => _onlineBand?.Score ?? BandScore;
+
+        /// <summary>
+        /// The band stars the score box shows: <see cref="BandStars"/>, or in an online session, the whole
+        /// band's, from the star cutoffs of every player in it.
+        /// </summary>
+        public float ScoreBoxStars => _onlineBand?.Stars ?? BandStars;
+
         public double FirstNoteTime { get; private set; }
         public double LastNoteTime  { get; private set; }
 
@@ -392,10 +409,16 @@ namespace YARG.Gameplay
 
             // Update players
             int totalScore = 0;
+            int onlineScore = 0;
             foreach (var player in _players)
             {
                 player.GameplayUpdate();
-                if (player.IsRemote) continue;
+                if (player.IsRemote)
+                {
+                    var feed = player.Player.RemoteFeed;
+                    onlineScore += feed.Score + feed.BandBonus;
+                    continue;
+                }
                 totalScore += player.Score;
                 totalScore += player.BandBonusScore;
             }
@@ -407,6 +430,12 @@ namespace YARG.Gameplay
 
             BandScore = totalScore;
             EngineManager.UpdateStars();
+
+            if (_onlineBand != null)
+            {
+                _onlineBand.Score = totalScore + onlineScore;
+                _onlineBand.UpdateStars();
+            }
 
             // End song if needed (required for the [end] event)
             if (_songRunner.SongTime >= SongLength)
@@ -1272,6 +1301,24 @@ namespace YARG.Gameplay
             _breBox.EndCoda(EngineManager.TotalCodaBonus, songEnding, null);
         }
 
+        /// <summary>
+        /// Online link: works out the whole band's star cutoffs for the score box, from every player with a
+        /// track (friends' players without one, like vocals, count toward neither the score nor the cutoffs).
+        /// </summary>
+        private void UpdateOnlineBandCutoffs()
+        {
+            if (!_players.Any(p => p.IsRemote))
+            {
+                _onlineBand = null;
+                return;
+            }
+
+            _onlineBand ??= new EngineManager();
+            _onlineBand.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(
+                _players.Select(p => p.BaseEngine.StarScoreThresholds).ToList());
+            _onlineBand.ResetStars();
+        }
+
         public void ResetCoda()
         {
             _breBox.ForceReset();
@@ -1281,6 +1328,7 @@ namespace YARG.Gameplay
         {
             EngineManager.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(LocalStarScoreThresholds());
             EngineManager.ResetStars();
+            UpdateOnlineBandCutoffs();
             if (_unisonDisplay.enabled)
             {
                 _unisonDisplay.OnDifficultyChanged(player.EngineContainer.EngineId);
