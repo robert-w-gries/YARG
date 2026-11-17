@@ -18,8 +18,29 @@ namespace YARG
         // so it can be restored when focus returns.
         private bool _framerateLimitedFromFocusLoss;
 
+        // Set when a focus event arrives before settings have loaded (Unity sends the
+        // first OnApplicationFocus before Start), so the state can be applied afterwards.
+        private bool _focusChangePending;
+
+        private void Update()
+        {
+            if (!_focusChangePending || SettingsManager.Settings == null)
+            {
+                return;
+            }
+
+            _focusChangePending = false;
+            OnApplicationFocus(Application.isFocused);
+        }
+
         private void OnApplicationFocus(bool hasFocus)
         {
+            if (SettingsManager.Settings == null)
+            {
+                _focusChangePending = true;
+                return;
+            }
+
             if (!hasFocus)
             {
                 if (SettingsManager.Settings.MuteOnFocusLoss.Value && !_mutedFromFocusLoss)
