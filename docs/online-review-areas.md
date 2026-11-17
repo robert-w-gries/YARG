@@ -124,6 +124,8 @@ Examine these items:
 - **Engine managers:** `EngineManagerFor` gives each friend a separate `EngineManager`. On the host, friends' players use the main manager. Thus the meter of the host includes all players.
 - **Star power:** On the host, friends' engines also change the star power multiplier and unisons. Thus scores can be different. A fix needs a YARG.Core change (open question 5).
 - **Clients:** The main manager of a client has fail off. Only the meter of the host can fail the song.
+- **Meter icons:** On a client, `FailMeter` shows an icon for each player in the host's `meter` message, at the host's value (`LinkController.BandMeterMarkers`). A player that the host does not count has no icon.
+- **Band total:** The scoreboard shows the band total. It adds the score and band bonus that each player's own game reports. It is not in `BandScore` or in saved scores.
 
 ### 9. Song time and synced start
 

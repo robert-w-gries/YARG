@@ -1,8 +1,12 @@
+using System;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
+using UnityEngine;
+using YARG.Core;
 using YARG.Core.Engine;
 using YARG.Core.Logging;
 using YARG.Gameplay;
+using YARG.Gameplay.HUD;
 using YARG.Gameplay.Player;
 using YARG.Integration.Link.Session;
 using YARG.Integration.Link.Transport;
@@ -19,12 +23,14 @@ namespace YARG.Integration.Link
     /// disagree. Instead, on the host friends' mirrored players join the main <see cref="EngineManager"/>
     /// (<see cref="RemoteInputFeed.InHostBand"/>), so its fail meter works like local multiplayer. The host
     /// sends what it decides: a player failed (<c>player_failed</c>), the band was revived (<c>revived</c>),
-    /// the band failed (<c>failed</c>), and the meter's value (<c>meter</c>, about ten times a second).
+    /// the band failed (<c>failed</c>), and the meter's value with each player's part of it (<c>meter</c>,
+    /// about ten times a second).
     /// </para>
     /// <para>
-    /// The other games run their own meter with fail off, show the host's value on it, and apply the host's
-    /// decisions: a failed player's highway goes down and every engine waits for a revive, so the next star
-    /// power activation saves the band, as in local multiplayer.
+    /// The other games run their own meter with fail off, show the host's values on it (the band's fill and an
+    /// icon for every player the host's meter counts, friends included), and apply the host's decisions: a
+    /// failed player's highway goes down and every engine waits for a revive, so the next star power
+    /// activation saves the band, as in local multiplayer.
     /// </para>
     /// </remarks>
     public partial class LinkController
@@ -49,6 +55,12 @@ namespace YARG.Integration.Link
 
             /// <summary>Joiner: the host's meter, once it has said.</summary>
             public float? HostHappiness;
+
+            /// <summary>
+            /// Joiner: each player's value on the host's meter (member ID, player index), as of its last
+            /// <c>meter</c> message. A player who isn't in it doesn't count toward the host's meter.
+            /// </summary>
+            public readonly Dictionary<(string, int), float> HostPlayers = new();
         }
 
         private BandMeter _band;
@@ -103,12 +115,51 @@ namespace YARG.Integration.Link
             if (gm == null || !gm.IsSongStarted || gm.Paused || Now < _band.NextSend) return;
             _band.NextSend = Now + METER_INTERVAL;
 
+            // Each player's part, grouped by member: { member: [happiness, ...] } by player index, with null
+            // for a player the meter doesn't count (a failed player, or one sitting out)
+            var players = new JObject();
+            foreach (var player in gm.Players)
+            {
+                var container = player.EngineContainer;
+                if (container == null || !_band.Engines.Engines.Contains(container)) continue;
+                if (!TryGetBandKey(player, out string member, out int index)) continue;
+                if (index >= LinkLimits.MAX_PLAYERS_PER_MEMBER) continue;
+
+                if (players[member] is not JArray values)
+                {
+                    values = new JArray();
+                    players[member] = values;
+                }
+                while (values.Count <= index) values.Add(JValue.CreateNull());
+                values[index] = Math.Round(container.Happiness, 3);
+            }
+
             // Unreliable: only the latest value matters
             _session.Broadcast(KIND_METER, new JObject
             {
                 ["song"] = _band.SongHash,
                 ["happiness"] = _band.Engines.Happiness,
+                ["players"] = players,
             }, Delivery.Unreliable);
+        }
+
+        /// <summary>
+        /// Who a player is across the session: the member whose game they play on, and their index in that
+        /// game's <c>setup</c>.
+        /// </summary>
+        private bool TryGetBandKey(BasePlayer player, out string member, out int index)
+        {
+            if (player.Player.RemoteFeed is { } feed)
+            {
+                member = feed.Member;
+                index = feed.Index;
+            }
+            else
+            {
+                member = _session.LocalMemberId;
+                index = _shared?.Players.IndexOf(player) ?? -1;
+            }
+            return index >= 0;
         }
 
         /// <summary>Host: a player's meter ran out (raised on every meter update until they're revived).</summary>
@@ -123,20 +174,8 @@ namespace YARG.Integration.Link
                 if (container == null || container.EngineId != engineId) continue;
                 if (gm.EngineManagerFor(player.Player) != _band.Engines) continue;
 
-                string member;
-                int index;
-                if (player.Player.RemoteFeed is { } feed)
-                {
-                    member = feed.Member;
-                    index = feed.Index;
-                }
-                else
-                {
-                    member = _session.LocalMemberId;
-                    index = _shared.Players.IndexOf(player);
-                }
-
-                if (index < 0 || !_band.Failed.Add((member, index))) return;
+                if (!TryGetBandKey(player, out string member, out int index) ||
+                    !_band.Failed.Add((member, index))) return;
 
                 YargLogger.LogInfo($"Link: {player.Player.Profile.Name} failed, telling friends");
                 _session.Broadcast(KIND_PLAYER_FAILED, new JObject
@@ -171,7 +210,11 @@ namespace YARG.Integration.Link
             switch (kind)
             {
                 case KIND_METER:
-                    _band.HostHappiness = (float?) data["happiness"];
+                    _band.HostHappiness = SaneHappiness((float?) data["happiness"]);
+                    if (data["players"] is JObject players)
+                    {
+                        ReadHostPlayers(players);
+                    }
                     break;
 
                 case KIND_PLAYER_FAILED:
@@ -183,6 +226,107 @@ namespace YARG.Integration.Link
                     gm.ReviveFromLink();
                     break;
             }
+        }
+
+        /// <summary>Joiner: each player's value on the host's meter.</summary>
+        private void ReadHostPlayers(JObject players)
+        {
+            _band.HostPlayers.Clear();
+            foreach (var pair in players)
+            {
+                string member = pair.Key;
+                var token = pair.Value;
+
+                // Only members of this session, which also bounds how much a host can make us keep
+                if (member != _session.LocalMemberId && FindMember(member) == null) continue;
+                if (token is not JArray values) continue;
+
+                int count = Math.Min(values.Count, LinkLimits.MAX_PLAYERS_PER_MEMBER);
+                for (int i = 0; i < count; i++)
+                {
+                    if (values[i].Type is JTokenType.Float or JTokenType.Integer &&
+                        SaneHappiness((float) values[i]) is { } happiness)
+                    {
+                        _band.HostPlayers[(member, i)] = happiness;
+                    }
+                }
+            }
+        }
+
+        private static float? SaneHappiness(float? value) =>
+            value is { } v && !float.IsNaN(v) && !float.IsInfinity(v) ? Mathf.Clamp01(v) : null;
+
+        /// <summary>
+        /// The fail meter's icons on a joiner: every player the host's meter counts, at the host's values. Our
+        /// own players and friends' mirrored players use their highway's icon; friends' players without a
+        /// highway (vocals, pro guitar) get their instrument's icon. Returns <c>null</c> when this game's own
+        /// meter is the band's.
+        /// </summary>
+        public List<FailMeter.Marker> BandMeterMarkers(GameManager gameManager)
+        {
+            if (!IsBandMeterRemote(gameManager)) return null;
+
+            var band = _band;
+            var markers = new List<FailMeter.Marker>();
+
+            foreach (var player in gameManager.Players)
+            {
+                var container = player.EngineContainer;
+                if (container == null || !TryGetBandKey(player, out string member, out int index))
+                {
+                    continue;
+                }
+
+                var key = (member, index);
+                bool local = !player.IsRemote;
+                var engines = gameManager.EngineManagerFor(player.Player);
+                markers.Add(new FailMeter.Marker
+                {
+                    SpriteName = container.GetInstrumentSprite(gameManager.Song),
+                    Color = player.Player.GetGameplayIconColor(),
+                    Happiness = () => HostPlayerHappiness(band, key, local ? (container, engines) : default),
+                    IsStarPowerActive = () => container.BaseEngine.BaseStats.IsStarPowerActive,
+                });
+            }
+
+            // Friends' players that have no highway here can still be on the host's meter
+            foreach (var setup in _remoteSetups.Values)
+            {
+                if (!setup.Taken || setup.SongHash != band.SongHash) continue;
+                foreach (var feed in setup.Feeds)
+                {
+                    if (feed.Mirrored) continue;
+
+                    var key = (feed.Member, feed.Index);
+                    markers.Add(new FailMeter.Marker
+                    {
+                        SpriteName = Enum.TryParse(feed.Instrument, out Instrument instrument)
+                            ? InstrumentIconProvider.GetInstrumentSprite(instrument)
+                            : null,
+                        Happiness = () => HostPlayerHappiness(band, key, default),
+                        IsStarPowerActive = () => false,
+                    });
+                }
+            }
+
+            return markers;
+        }
+
+        /// <summary>
+        /// A player's value on the host's meter. Until the host's first <c>meter</c> message, our own players
+        /// show our own values, like the band's fill does (<see cref="HostBandHappiness"/>).
+        /// </summary>
+        private static float? HostPlayerHappiness(BandMeter band, (string, int) key,
+            (EngineManager.EngineContainer Container, EngineManager Engines) local)
+        {
+            if (band.HostHappiness.HasValue)
+            {
+                return band.HostPlayers.TryGetValue(key, out float happiness) ? happiness : null;
+            }
+
+            return local.Container != null && local.Engines.Engines.Contains(local.Container)
+                ? local.Container.Happiness
+                : null;
         }
 
         private void FailPlayerFromHost(GameManager gm, string member, int index)

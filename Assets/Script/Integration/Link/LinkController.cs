@@ -106,6 +106,9 @@ namespace YARG.Integration.Link
         public const string STATUS_PLAYING  = "playing";
         public const string STATUS_RESULTS  = "results";
 
+        /// <summary>The scene a member in a song reports (see <see cref="SceneName"/>).</summary>
+        private const string SCENE_GAMEPLAY = "gameplay";
+
         public static LinkController Instance { get; private set; }
 
         private static readonly Stopwatch Clock = Stopwatch.StartNew();
@@ -218,6 +221,7 @@ namespace YARG.Integration.Link
             CheckRemoteRequestAbandoned();
             CheckSongEnded();
             UpdateBandMeter();
+            UpdatePauseSync();
             UpdateClockSync();
         }
 
@@ -618,7 +622,8 @@ namespace YARG.Integration.Link
             switch (GlobalVariables.Instance.CurrentScene)
             {
                 case SceneIndex.Gameplay:
-                    return _waiting && !_startAt.HasValue ? STATUS_READY : STATUS_PLAYING;
+                    if (_waiting && !_startAt.HasValue) return STATUS_READY;
+                    return IsSyncedPauseActive ? STATUS_PAUSED : STATUS_PLAYING;
                 case SceneIndex.Score:
                     return STATUS_RESULTS;
                 case SceneIndex.Menu:
@@ -637,6 +642,7 @@ namespace YARG.Integration.Link
             STATUS_CHOOSING => "Picking a part",
             STATUS_READY    => "Ready",
             STATUS_PLAYING  => "Playing",
+            STATUS_PAUSED   => "Paused",
             STATUS_RESULTS  => "Results",
             null or ""      => "In the session",
             _               => char.ToUpperInvariant(status[0]) + status.Substring(1),
@@ -718,6 +724,7 @@ namespace YARG.Integration.Link
             _shared = null;
             EndBandMeter();
             EndClockSync();
+            EndPauseSync();
         }
 
         private void OnMemberJoined(LinkMember member)
@@ -819,7 +826,7 @@ namespace YARG.Integration.Link
         private static string SceneName(SceneIndex scene) => scene switch
         {
             SceneIndex.Menu        => LinkSession.SCENE_MENU,
-            SceneIndex.Gameplay    => "gameplay",
+            SceneIndex.Gameplay    => SCENE_GAMEPLAY,
             SceneIndex.Score       => "score",
             SceneIndex.Calibration => "calibration",
             _                      => scene.ToString().ToLowerInvariant(),
@@ -895,6 +902,7 @@ namespace YARG.Integration.Link
                     _shared = shared;
                     StartBandMeter(gameManager);
                     StartClockSync();
+                    StartPauseSync();
                     return StartResult.Synced;
                 }
 
@@ -1108,6 +1116,11 @@ namespace YARG.Integration.Link
                     case KIND_METER:
                         OnBandMeterData(member, kind, data);
                         break;
+
+                    case KIND_PAUSE:
+                    case KIND_RESUME:
+                        OnPauseData(member, kind, data);
+                        break;
                 }
             }
             catch (Exception e)
@@ -1153,6 +1166,7 @@ namespace YARG.Integration.Link
             _shared = null;
             EndBandMeter();
             EndClockSync();
+            EndPauseSync();
 
             // Setups that were used are done with; ones still waiting for us to join are kept
             var used = new List<string>();
@@ -1331,6 +1345,7 @@ namespace YARG.Integration.Link
                         ["from"]       = from,
                         ["inputs"]     = Convert.ToBase64String(bytes),
                         ["score"]      = player.Score,
+                        ["bonus"]      = player.BandBonusScore,
                         ["combo"]      = player.Combo,
                         ["stars"]      = player.Stars,
                         ["notesHit"]   = player.NotesHit,
@@ -1418,7 +1433,7 @@ namespace YARG.Integration.Link
                 return setup;
             }
 
-            private static bool IsSaneTime(double time) =>
+            public static bool IsSaneTime(double time) =>
                 !double.IsNaN(time) && !double.IsInfinity(time) && Math.Abs(time) <= MAX_INPUT_TIME;
 
             public void Receive(JObject msg, double now)
@@ -1453,6 +1468,7 @@ namespace YARG.Integration.Link
                     var feed = Feeds[i];
                     feed.SetStats(
                         (int?) p["score"] ?? 0,
+                        (int?) p["bonus"] ?? 0,
                         (int?) p["combo"] ?? 0,
                         (float?) p["stars"] ?? 0f,
                         (int?) p["notesHit"] ?? 0,
@@ -1491,10 +1507,16 @@ namespace YARG.Integration.Link
             var gm = _shared.GameManager;
             if (gm == null || !gm.IsSongStarted) return;
 
+            DrawPauseStatus();
+
             var rows = new List<(string Name, string Detail, int Score, bool Local, bool Stalled, string Connection)>();
+
+            // The band's total: every player's score, plus their band bonus, as their own game reports it
+            long bandTotal = 0;
             foreach (var player in _shared.Players)
             {
                 if (player == null) continue;
+                bandTotal += (long) player.Score + player.BandBonusScore;
                 rows.Add((player.Player.Profile.Name,
                     Detail(player.Stars, player.Combo, player.NotesHit, player.BaseStats.TotalNotes),
                     player.Score, true, false, null));
@@ -1507,6 +1529,7 @@ namespace YARG.Integration.Link
                 foreach (var feed in setup.Feeds)
                 {
                     anyRemote = true;
+                    bandTotal += (long) feed.Score + feed.BandBonus;
                     bool stalled = !gm.Paused && Now - feed.LastReceived > RemoteInputFeed.STALL_SECONDS;
                     var member = FindMember(feed.Member);
                     string connection = member == null ? null : DescribeConnection(member);
@@ -1531,6 +1554,7 @@ namespace YARG.Integration.Link
             _scoreboardStyle.fontSize = Mathf.RoundToInt(22 * scale);
 
             var text = new StringBuilder();
+            text.AppendLine($"Band  <b>{bandTotal:N0}</b>");
             foreach (var row in rows)
             {
                 string name = row.Local ? $"<b>{Escape(row.Name)}</b>" : Escape(row.Name);
