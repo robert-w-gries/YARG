@@ -51,6 +51,8 @@ namespace YARG.Integration.Link
 
         /// <summary>The friend's own numbers, as last reported. These are authoritative.</summary>
         public int   Score    { get; private set; }
+        /// <summary>The friend's band bonus: points from their bandmates' star power.</summary>
+        public int   BandBonus { get; private set; }
         public int   Combo    { get; private set; }
         public float Stars    { get; private set; }
         public int   NotesHit { get; private set; }
@@ -136,9 +138,10 @@ namespace YARG.Integration.Link
             _watermark = Math.Max(_watermark, inputTime);
         }
 
-        public void SetStats(int score, int combo, float stars, int notesHit, int totalNotes)
+        public void SetStats(int score, int bandBonus, int combo, float stars, int notesHit, int totalNotes)
         {
             Score = score;
+            BandBonus = bandBonus;
             Combo = combo;
             Stars = stars;
             NotesHit = notesHit;

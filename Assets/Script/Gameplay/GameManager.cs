@@ -136,6 +136,13 @@ namespace YARG.Gameplay
         public float BandHappiness => LinkController.Instance?.HostBandHappiness(this) ?? EngineManager.Happiness;
 
         /// <summary>
+        /// The fail meter's player icons in an online session that we aren't hosting, which show the host's
+        /// values for every player in the band, or <c>null</c> to show this game's own engines.
+        /// </summary>
+        public List<FailMeter.Marker> OnlineBandMeterMarkers() =>
+            LinkController.Instance?.BandMeterMarkers(this);
+
+        /// <summary>
         /// Online link: the host's band meter decides when this song fails, so our own meter can't.
         /// </summary>
         private bool BandMeterIsRemote => LinkController.Instance?.IsBandMeterRemote(this) ?? false;
@@ -489,34 +496,19 @@ namespace YARG.Gameplay
         {
             _songRunner.Pause();
             PauseCore(showMenu);
+
+            // Online: everyone in a synced song pauses together (a failed song's menu is synced as a fail)
+            if (showMenu && !PlayerHasFailed)
+            {
+                LinkController.Instance?.OnLocalPause(this);
+            }
         }
 
         private void PauseCore(bool showMenu, bool overridePause = false)
         {
             if (showMenu)
             {
-                CloseAllPlayerMenus();
-
-                if (!GlobalVariables.State.PlayingWithReplay && ReplayInfo != null)
-                {
-                    _pauseMenu.PushMenu(PauseMenuManager.Menu.ReplayPause);
-                }
-                else if (PlayerHasFailed)
-                {
-                    _pauseMenu.PushMenu(PauseMenuManager.Menu.FailPause);
-                }
-                else if (IsPractice)
-                {
-                    _pauseMenu.PushMenu(PauseMenuManager.Menu.PracticePause);
-                }
-                else if (PlayingAShow)
-                {
-                    _pauseMenu.PushMenu(PauseMenuManager.Menu.SetlistPause);
-                }
-                else
-                {
-                    _pauseMenu.PushMenu(PauseMenuManager.Menu.QuickPlayPause);
-                }
+                PushPauseMenu();
             }
 
             // Pause the background/venue
@@ -551,10 +543,61 @@ namespace YARG.Gameplay
             Screen.sleepTimeout = _originalSleepTimeout;
         }
 
+        private void PushPauseMenu()
+        {
+            CloseAllPlayerMenus();
+
+            if (!GlobalVariables.State.PlayingWithReplay && ReplayInfo != null)
+            {
+                _pauseMenu.PushMenu(PauseMenuManager.Menu.ReplayPause);
+            }
+            else if (PlayerHasFailed)
+            {
+                _pauseMenu.PushMenu(PauseMenuManager.Menu.FailPause);
+            }
+            else if (IsPractice)
+            {
+                _pauseMenu.PushMenu(PauseMenuManager.Menu.PracticePause);
+            }
+            else if (PlayingAShow)
+            {
+                _pauseMenu.PushMenu(PauseMenuManager.Menu.SetlistPause);
+            }
+            else
+            {
+                _pauseMenu.PushMenu(PauseMenuManager.Menu.QuickPlayPause);
+            }
+        }
+
+        /// <summary>
+        /// Online: open the pause menu while staying paused, when a player who was waiting for friends to
+        /// resume changes their mind, or a friend pauses again.
+        /// </summary>
+        public void ShowPauseMenu()
+        {
+            if (!Paused || _pauseMenu.IsOpen) return;
+            PushPauseMenu();
+        }
+
+        /// <summary>
+        /// Online: close the pause menu but stay paused, while a player who pressed resume waits for friends.
+        /// </summary>
+        public void HidePauseMenu()
+        {
+            _pauseMenu.PopAllMenus();
+            CloseAllPlayerMenus();
+        }
+
         public bool PlayerHasFailed { get; set; } = false;
 
         public async void Resume(double? rewindDuration = null)
         {
+            // Online: in a synced pause, resuming means "ready", and the host resumes everyone together
+            if (LinkController.Instance?.HoldResume(this) == true)
+            {
+                return;
+            }
+
             // We don't rewind in practice mode or in replay, so we can skip all the BS
             if (IsPractice || IsReplay)
             {

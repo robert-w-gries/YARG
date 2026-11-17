@@ -18,6 +18,12 @@ namespace YARG.Gameplay.HUD
             return GetInstrumentSprite(container.Instrument, container.HarmonyIndex, false);
         }
 
+        /// <summary>An instrument's icon, for a player with no engine or profile here (an online friend's).</summary>
+        public static string GetInstrumentSprite(Instrument instrument)
+        {
+            return GetInstrumentSprite(instrument, 0, false);
+        }
+
         public static string GetInstrumentSprite(this YargPlayer player)
         {
             var isMissingDevice = player.IsMissingController || player.IsMissingMicrophone;
