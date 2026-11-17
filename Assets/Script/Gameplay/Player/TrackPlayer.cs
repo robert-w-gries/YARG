@@ -143,6 +143,25 @@ namespace YARG.Gameplay.Player
                 return;
             }
 
+            DropOutCore();
+        }
+
+        /// <summary>
+        /// Online: a friend whose player this mirrors has left the song or lost their connection. Their inputs
+        /// stopped, so their engine would freeze; drop them out instead, whoever is left.
+        /// </summary>
+        public void DropOutRemote()
+        {
+            if (!IsRemote || !IsActive)
+            {
+                return;
+            }
+
+            DropOutCore();
+        }
+
+        private void DropOutCore()
+        {
             IsFc = false;
 
             Player.IsScoreValid = false;

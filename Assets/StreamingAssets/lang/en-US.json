@@ -757,6 +757,10 @@
             "Setlist": {
                 "Skip": "Skip"
             },
+            "Online": {
+                "LeaveWithParty": "Leave With Party",
+                "LeaveAlone": "Leave Alone"
+            },
             "QuickSettings": {
                 "AudioSettings": "Audio Settings",
                 "EditHud": "Edit HUD",
