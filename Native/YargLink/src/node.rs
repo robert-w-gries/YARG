@@ -219,10 +219,13 @@ impl Shared {
     }
 
     pub fn push_log(&self, event: Event) {
-        if self.queued_logs.load(Ordering::Relaxed) as usize >= MAX_QUEUED_LOGS {
+        // Check and count in one step, so threads logging at once can't go over the cap together
+        let counted = self.queued_logs.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            ((n as usize) < MAX_QUEUED_LOGS).then_some(n + 1)
+        });
+        if counted.is_err() {
             return;
         }
-        self.queued_logs.fetch_add(1, Ordering::Relaxed);
         lock(&self.events).events.push_back(event);
     }
 
@@ -593,16 +596,24 @@ async fn read_frame(recv: &mut RecvStream, max: usize) -> std::result::Result<Op
         return Err(format!("frame of {len} bytes is over the {max} byte limit"));
     }
 
+    // The kind byte on its own, so the payload doesn't have to be shifted down after it's read
+    let mut kind = [0u8; 1];
+    match recv.read_exact(&mut kind).await {
+        Ok(()) => {}
+        Err(ReadExactError::FinishedEarly(_)) => return Err("stream ended in the middle of a frame".into()),
+        Err(e) => return Err(e.to_string()),
+    }
+
     // Grow the buffer as data arrives, so a header alone can't make us allocate the whole frame
-    let mut frame = Vec::with_capacity(len.min(64 * 1024));
-    while frame.len() < len {
-        match recv.read_chunk(len - frame.len()).await.map_err(|e| e.to_string())? {
-            Some(chunk) => frame.extend_from_slice(&chunk),
+    let len = len - 1;
+    let mut payload = Vec::with_capacity(len.min(64 * 1024));
+    while payload.len() < len {
+        match recv.read_chunk(len - payload.len()).await.map_err(|e| e.to_string())? {
+            Some(chunk) => payload.extend_from_slice(&chunk),
             None => return Err("stream ended in the middle of a frame".into()),
         }
     }
-    let kind = frame.remove(0);
-    Ok(Some((kind, frame)))
+    Ok(Some((kind[0], payload)))
 }
 
 async fn send_hello(send: &mut SendStream) -> std::result::Result<(), String> {
