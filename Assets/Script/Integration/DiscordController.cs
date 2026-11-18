@@ -3,13 +3,18 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Net;
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using Cysharp.Threading.Tasks;
 using Discord;
 using UnityEngine;
 using YARG.Core.Logging;
 using YARG.Core.Song;
 using YARG.Core.Utility;
+using YARG.Integration.Link;
+using YARG.Integration.Link.Session;
 using YARG.Localization;
+using YARG.Menu.Persistent;
 using YARG.Settings;
 
 namespace YARG.Integration
@@ -25,7 +30,16 @@ namespace YARG.Integration
     {
         private const long APPLICATION_ID = 1091177744416637028;
 
+        /// <summary>
+        /// Environment variable for <see cref="CommandLineArgs.DiscordAppId"/>: another Discord application to use,
+        /// for testing with a private app.
+        /// </summary>
+        private const string APP_ID_VARIABLE = "YARG_DISCORD_APP_ID";
+
         private const string ALBUM_API_URL = "https://api.enchor.us/album-art";
+
+        // Discord's secrets and party IDs are 128-byte buffers, including the terminator
+        private const int MAX_SECRET_LENGTH = 127;
 
 #if UNITY_EDITOR || YARG_TEST_BUILD
         private const string LARGE_TEXT_KEY = "Discord.Default.LargeText.Dev";
@@ -52,6 +66,25 @@ namespace YARG.Integration
         private long _pauseTime;
 
         private string _albumUrl;
+
+        // The online session we advertise, so friends can join from Discord. Null when there's none to join.
+        private string _partyId;
+        private string _joinSecret;
+        private int _partySize;
+        private int _partyMax;
+
+        // An invite code that was too long to advertise, so it's only logged once
+        private string _unadvertisedCode;
+
+        // An invite accepted in Discord, waiting for us to be back in the menu
+        private string _pendingJoin;
+        private bool _toldPendingJoin;
+
+        // Whether we've already logged that Discord couldn't be reached, so retrying stays quiet until it connects
+        private bool _toldNotConnected;
+
+        // Whether we were in an online session last frame, so we only try to reach Discord again on joining one
+        private bool _wasOnline;
 
         public void Initialize()
         {
@@ -80,27 +113,51 @@ namespace YARG.Integration
                 return;
             }
 
+            long appId = ApplicationId;
             try
             {
-                _discord = new Discord.Discord(APPLICATION_ID, (ulong) CreateFlags.NoRequireDiscord);
+                _discord = new Discord.Discord(appId, (ulong) CreateFlags.NoRequireDiscord);
             }
             catch (ResultException e) when (e.Result == Result.InternalError)
             {
-                YargLogger.LogWarning("Failed to start Discord presence client: Discord is not running or unreachable.");
+                // We try again on focus and on going online, so this is only worth saying once
+                if (!_toldNotConnected)
+                {
+                    _toldNotConnected = true;
+                    YargLogger.LogWarning("Failed to start Discord presence client: Discord is not running or " +
+                        "unreachable. Trying again when the game is focused or goes online.");
+                }
 
                 _discord = null;
                 return;
             }
             catch (Exception e)
             {
-                YargLogger.LogException(e, "Failed to start Discord presence client.");
+                if (!_toldNotConnected)
+                {
+                    _toldNotConnected = true;
+                    YargLogger.LogException(e, "Failed to start Discord presence client.");
+                }
 
                 _discord = null;
                 return;
             }
 
+            if (_toldNotConnected)
+            {
+                _toldNotConnected = false;
+                YargLogger.LogInfo("Discord: connected");
+            }
+
+            if (appId != APPLICATION_ID)
+            {
+                YargLogger.LogFormatInfo("Discord: using application {0} instead of YARG's", appId);
+            }
+
             // Listen to the changing of states
             GameStateFetcher.GameStateChange += OnGameStateChange;
+
+            ListenForInvites();
 
             // Get the start time of the game (Discord requires it in this format)
             _gameStartTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
@@ -251,10 +308,22 @@ namespace YARG.Integration
 
         private void Update()
         {
+            // Discord may have been started after the game, and invites only work once we've reached it
+            bool online = IsOnline();
+            if (online && !_wasOnline)
+            {
+                CreateInstance();
+            }
+
+            _wasOnline = online;
+
             if (_discord is null)
             {
                 return;
             }
+
+            UpdateParty();
+            TryPendingJoin();
 
             try
             {
@@ -265,6 +334,16 @@ namespace YARG.Integration
                 YargLogger.LogException(e, "Failed to run Discord client callbacks!");
 
                 TryDispose();
+            }
+        }
+
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            // Coming back to the game is the usual moment after opening Discord. Does nothing if we're
+            // already connected.
+            if (hasFocus)
+            {
+                CreateInstance();
             }
         }
 
@@ -314,6 +393,29 @@ namespace YARG.Integration
 
         private void SetActivity(Activity activity)
         {
+            if (_joinSecret is not null)
+            {
+                activity.Party = new ActivityParty
+                {
+                    Id = _partyId,
+                    Size = new PartySize
+                    {
+                        CurrentSize = _partySize,
+                        MaxSize = _partyMax
+                    },
+                    // Friends join through an invite or by asking, not from anyone's profile
+                    Privacy = ActivityPartyPrivacy.Private
+                };
+                activity.Secrets = new ActivitySecrets
+                {
+                    Join = _joinSecret
+                };
+
+                // Left at zero, Discord treats the invite as joinable from nowhere ("Join from a supported
+                // device"). The game only runs on desktop.
+                activity.SupportedPlatforms = (uint) ActivitySupportedPlatformFlags.Desktop;
+            }
+
             _discord?.GetActivityManager().UpdateActivity(activity, result =>
             {
                 if (result != Result.Ok)
@@ -325,7 +427,7 @@ namespace YARG.Integration
 
         private void SetDefaultActivity()
         {
-            SetActivity(new Activity
+            _activity = new Activity
             {
                 Assets =
                 {
@@ -339,7 +441,194 @@ namespace YARG.Integration
                 {
                     Start = _gameStartTime
                 }
-            });
+            };
+
+            SetActivity(_activity);
+        }
+
+        #region Invites
+
+        private void ListenForInvites()
+        {
+            var activities = _discord.GetActivityManager();
+            activities.OnActivityJoin += OnActivityJoin;
+
+#if !UNITY_EDITOR
+            // Lets Discord start the game when someone accepts an invite while it's closed. In the editor this
+            // would register the editor itself, so it's skipped there.
+            try
+            {
+                // With another application, Discord has to start the game with it too, or the invite never
+                // reaches us
+                if (ApplicationId == APPLICATION_ID)
+                {
+                    activities.RegisterCommand();
+                }
+                else
+                {
+                    string exe = Environment.GetCommandLineArgs()[0];
+                    activities.RegisterCommand(
+                        $"\"{exe}\" {CommandLineArgs.DISCORD_APP_ID_ARG} {ApplicationId}");
+                }
+            }
+            catch (Exception e)
+            {
+                YargLogger.LogException(e, "Failed to register the game's launch command with Discord.");
+            }
+#endif
+        }
+
+        /// <summary>
+        /// Advertise the online session we're in, or stop advertising it, when that changes.
+        /// </summary>
+        private void UpdateParty()
+        {
+            GetParty(out string id, out string secret, out int size, out int max);
+            if (id == _partyId && secret == _joinSecret && size == _partySize && max == _partyMax)
+            {
+                return;
+            }
+
+            _partyId = id;
+            _joinSecret = secret;
+            _partySize = size;
+            _partyMax = max;
+
+            SetActivity(_activity);
+        }
+
+        private void GetParty(out string id, out string secret, out int size, out int max)
+        {
+            id = null;
+            secret = null;
+            size = 0;
+            max = 0;
+
+            // A joiner only advertises the session once the host has let them in
+            if (!IsOnline())
+            {
+                return;
+            }
+
+            var link = LinkController.Instance;
+            var session = link.CurrentSession;
+            string code = link.InviteCode;
+
+            // The default invite code is a bare endpoint ID, which fits. One with addresses might not, and
+            // cutting it short would send friends somewhere else, so it isn't advertised.
+            if (Encoding.UTF8.GetByteCount(code) > MAX_SECRET_LENGTH)
+            {
+                if (code != _unadvertisedCode)
+                {
+                    _unadvertisedCode = code;
+                    YargLogger.LogWarning("Discord: the invite code is too long for a Discord invite, so friends " +
+                        "can't join from Discord.");
+                }
+
+                return;
+            }
+
+            // Everyone in the session has the same party, without showing the join secret to anyone who can
+            // see our activity
+            id = PartyId(code);
+            secret = code;
+            size = session.Members.Count + 1;
+            max = Math.Max(size, new LinkSessionOptions().MaxMembers + 1);
+        }
+
+        /// <summary>
+        /// Whether we're in an online session that others can join: hosting one, or let into one.
+        /// </summary>
+        private static bool IsOnline()
+        {
+            var link = LinkController.Instance;
+            return LinkController.IsEnabled && link is not null && link.CurrentSession is { IsConnected: true } &&
+                !string.IsNullOrEmpty(link.InviteCode);
+        }
+
+        private static string PartyId(string code)
+        {
+            using var sha = SHA256.Create();
+            byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(code));
+            return BitConverter.ToString(hash, 0, 16).Replace("-", "").ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// Called (from <see cref="Discord.Discord.RunCallbacks"/>) when the player accepts an invite or a
+        /// friend accepts their request to join, including when Discord started the game for it.
+        /// </summary>
+        private void OnActivityJoin(string secret)
+        {
+            YargLogger.LogInfo("Discord: joining a friend's online session");
+
+            _pendingJoin = secret;
+            _toldPendingJoin = false;
+            TryPendingJoin();
+        }
+
+        private void TryPendingJoin()
+        {
+            if (_pendingJoin is null)
+            {
+                return;
+            }
+
+            var link = LinkController.Instance;
+            if (GlobalVariables.Instance == null || link is null)
+            {
+                return;
+            }
+
+            if (!LinkController.IsEnabled)
+            {
+                _pendingJoin = null;
+                ToastManager.ToastWarning("To join friends from Discord, turn on Settings › Experimental › " +
+                    "Enable online link, then accept the invite again.");
+                return;
+            }
+
+            // Already there (or hosting it)
+            if (_pendingJoin == link.InviteCode)
+            {
+                _pendingJoin = null;
+                return;
+            }
+
+            // Joining ends the session we're in, so don't do it in the middle of a song
+            if (GlobalVariables.Instance.CurrentScene != SceneIndex.Menu)
+            {
+                if (!_toldPendingJoin)
+                {
+                    _toldPendingJoin = true;
+                    ToastManager.ToastInformation("You'll join your friend's session when you're back in the menu.");
+                }
+
+                return;
+            }
+
+            string code = _pendingJoin;
+            _pendingJoin = null;
+            link.Join(code);
+        }
+
+        #endregion
+
+        /// <summary>
+        /// The Discord application to use: YARG's, unless <see cref="CommandLineArgs.DiscordAppId"/> or
+        /// <see cref="APP_ID_VARIABLE"/> names another.
+        /// </summary>
+        private static long ApplicationId
+        {
+            get
+            {
+                if (CommandLineArgs.DiscordAppId is { } fromArgs)
+                {
+                    return fromArgs;
+                }
+
+                return long.TryParse(Environment.GetEnvironmentVariable(APP_ID_VARIABLE), out long fromEnv) &&
+                    fromEnv > 0 ? fromEnv : APPLICATION_ID;
+            }
         }
 
         private static long GetUnixTime()
