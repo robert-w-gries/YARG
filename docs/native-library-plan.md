@@ -740,8 +740,11 @@ the song, and the host's no fail setting is the one that counts.
   alone. With friends' engines in the host's main manager, they also count toward its star power band
   multiplier and unisons. A client's star power raises the host's multiplier, but the host's star
   power doesn't raise the client's, because the client's game doesn't share them. Fails and saves stay
-  correct on both games; scores differ slightly when star power overlaps. A possible fix is a small
-  YARG.Core option to register an engine for the fail meter only, which needs the maintainers' go-ahead.
+  correct on both games. Band bonus differs when star power overlaps: the host's own players get band
+  bonus from friends' star power and a client's players get none. Each game still shows the same
+  numbers for everyone: the score box, the score screen header and friends' score cards use the score
+  and band bonus that each player's own game reports. The fix needs YARG.Core (see
+  [YARG.Core follow-up work](#yargcore-follow-up-work), item 1).
 - **Online play hides the menu options that would leave friends behind.** When friends are in the session,
   gameplay sets `GameManager.IsOnlinePlay`, and the pause, fail and quick settings menus hide Restart,
   Practice, Skip and the no fail options (`GenericPause.HideOnlineOptions`, matched by the method each
@@ -764,8 +767,8 @@ the song, and the host's no fail setting is the one that counts.
   from `LinkController.CanMirror`), so friends' games make no highway or engine for them. They still show in
   the lobby and play normally on their own game. The reasons differ:
   - *Pro guitar* has no replay support in YARG.Core: `ReplayFrame` can't serialize its engine parameters
-    and stats ("Stat creation not implemented"). Fixing it is a Core change, so it's a follow-up for the
-    maintainers.
+    and stats ("Stat creation not implemented"). Fixing it is a Core change (see
+    [YARG.Core follow-up work](#yargcore-follow-up-work), item 3).
   - *Vocals* can be serialized; the limit is in YARG. Every vocalist shares one `VocalTrack`, which
     `GameManager.Loading` sets up from the local vocalists (harmony parts included). `CreateRemotePlayers`
     only adds separate `TrackPlayer` highways afterwards, and skips vocals. Mirroring them means adding
@@ -783,6 +786,45 @@ the song, and the host's no fail setting is the one that counts.
   with it, or leave alone, which ends the song for the others the same way.
 - **The crowd and venue follow each game's own meter**, not the band's, on clients.
 
+## YARG.Core follow-up work
+
+The branch doesn't change YARG.Core (see [MVP goals](#mvp-goals)), so these items wait for the
+maintainers' go-ahead. Each one names the workaround in YARG that it would replace.
+
+1. **Register an engine for the fail meter only.** Today an engine joins all of an `EngineManager`
+   or none of it: star power count, band multiplier, unisons, band combo and the fail meter. The host
+   puts friends' mirrored engines in its main manager for the meter, so they also raise its band
+   multiplier and take part in its unisons. A client keeps friends in separate managers, so its
+   players get no band bonus from them. The result is that band bonus depends on who is host
+   (`GameManager.EngineManagerFor`). Possible shapes:
+   - An option on `EngineManager.Register` (or the `EngineContainer`) that leaves the engine out of
+     `UpdateStarPowerCount`, `UpdateBandMultiplier` and the unison events, and keeps it in the
+     happiness and revive logic.
+   - Or the reverse: a separate fail meter object that several managers can share.
+
+   With this change, friends no longer give band bonus on any game. Every game then agrees, and online
+   play gives no band bonus between games.
+2. **Count friends' star power in the band multiplier (after item 1).** To give band bonus across
+   games as local multiplayer does, a local engine's band multiplier must also count the friends who
+   have star power active. Their own game reports this. For example, an
+   `EngineManager.ExternalStarPowerCount` that `BandMultiplier` adds to `_starpowerCount`, set from a
+   new field in the `inputs` message. Open points for the maintainers:
+   - The reported state arrives about a network delay late, so the bonus starts and ends a little late.
+   - Band bonus then depends on data that isn't in the replay. A replay or `ReplayAnalyzer` run would
+     not give the same band bonus unless the replay also records the external count over time.
+3. **Replay support for pro guitar.** `ReplayFrame` can't serialize pro guitar engine parameters and
+   stats ("Stat creation not implemented"), so `LinkController.CanMirror` doesn't mirror pro guitar.
+   The same gap affects normal replays. Any new game mode needs the same support before it can be
+   mirrored.
+4. **Bounds checks in the replay reader.** The replay reader trusts the lengths and counts in the
+   data. A friend's `setup` message is untrusted, so `ReplayBlobCheck` checks every length before
+   the reader runs. It accepts only one replay version and one profile version, and must be updated
+   with each format change. If the reader checked bounds itself, the check could be removed.
+5. **Copy any stats object.** The copy constructors exist only on each stats type, so
+   `GameManager.ScoreCardStats` copies a friend's stats with a type switch before it puts in their
+   reported score. A public virtual `BaseStats.Clone()` would replace the switch and pick up new
+   game modes on its own. This is small and optional.
+
 ## Open questions
 
 1. Do maintainers have a preferred direction for online play (P2P like ours or server-based like the `asimard1` fork)?
@@ -790,8 +832,8 @@ the song, and the host's no fail setting is the one that counts.
 2. Will maintainers accept Rust in the native build, or do they want a different language or approach?
 3. Is the lobby host-authoritative (the host runs the coordinator, as today), or does any member coordinate?
 4. Which minimum macOS version does YARG target?
-5. Would maintainers accept a YARG.Core option to register an engine for the fail meter only? It would
-   remove the star power score drift described under known limitations.
+5. Which of the changes under [YARG.Core follow-up work](#yargcore-follow-up-work) would maintainers
+   accept? Item 1 removes the star power score drift described under known limitations.
 6. Should the host's vocalists and pro guitarists count toward the band meter while friends can't see
    them? Today a client's can't fail the band and the host's can.
 7. For official song sharing, where does the trusted list of official song hashes come from (for example, a
