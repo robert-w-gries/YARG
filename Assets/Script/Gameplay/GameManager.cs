@@ -8,6 +8,10 @@ using UnityEngine.InputSystem;
 using YARG.Core.Audio;
 using YARG.Core.Chart;
 using YARG.Core.Engine;
+using YARG.Core.Engine.Drums;
+using YARG.Core.Engine.Guitar;
+using YARG.Core.Engine.Keys;
+using YARG.Core.Engine.Vocals;
 using YARG.Core.Game;
 using YARG.Core.Input;
 using YARG.Core.Logging;
@@ -844,11 +848,13 @@ namespace YARG.Gameplay
                 {
                     IsHighScore = player.IsActive && player.Score > player.LastHighScore,
                     Player = player.Player,
-                    Stats = player.BaseStats,
+                    Stats = ScoreCardStats(player),
                     IsReplay = player.Player.IsReplay
                 }).ToArray(),
-                BandScore = BandScore,
-                BandStars = (int) BandStars,
+                // In an online session, the whole band's, as the score box showed it. Only for display:
+                // RecordScores saves this game's own players' score.
+                BandScore = ScoreBoxScore,
+                BandStars = (int) ScoreBoxStars,
                 NoFail = NoFailMode != NoFailMode.Off,
 
                 MeanAverageOffset = ActiveLocalPlayers
@@ -1328,6 +1334,35 @@ namespace YARG.Gameplay
         {
             var songEnding = SongTime >= LastNoteTime;
             _breBox.EndCoda(EngineManager.TotalCodaBonus, songEnding, null);
+        }
+
+        /// <summary>
+        /// The stats a player's score card shows. For a friend's player, their mirror's stats with the score,
+        /// band bonus and stars their own game reported, so every game shows the same numbers for them (on the
+        /// host, the mirror's band bonus also counts the host's star power; see "Star power" in
+        /// docs/online-review-areas.md).
+        /// </summary>
+        private static BaseStats ScoreCardStats(BasePlayer player)
+        {
+            var stats = player.BaseStats;
+            var feed = player.Player.RemoteFeed;
+            if (feed is not { HasData: true }) return stats;
+
+            BaseStats copy = stats switch
+            {
+                GuitarStats guitar => new GuitarStats(guitar),
+                DrumsStats drums   => new DrumsStats(drums),
+                KeysStats keys     => new KeysStats(keys),
+                VocalsStats vocals => new VocalsStats(vocals),
+                _                  => null,
+            };
+            if (copy == null) return stats;
+
+            // TotalScore is derived; move the difference into committed score so it adds up to theirs
+            copy.CommittedScore += feed.Score - copy.TotalScore;
+            copy.BandBonusScore = feed.BandBonus;
+            copy.Stars = feed.Stars;
+            return copy;
         }
 
         /// <summary>

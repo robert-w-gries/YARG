@@ -125,10 +125,11 @@ Examine these items:
 
 - **Local only:** Band score, band combo, star thresholds, saved scores and `MeanAverageOffset` use only local players. Friends' players must not go into the score database.
 - **Engine managers:** `EngineManagerFor` gives each friend a separate `EngineManager`. On the host, friends' players use the main manager. Thus the meter of the host includes all players.
-- **Star power:** On the host, friends' engines also change the star power multiplier and unisons. Thus scores can be different. A fix needs a YARG.Core change (open question 5).
+- **Star power:** On the host, friends' engines also change the star power multiplier and unisons. Thus the band bonus of a player is different on the host and on a client. A fix needs a YARG.Core change (item 1 in "YARG.Core follow-up work" in `native-library-plan.md`).
 - **Clients:** The main manager of a client has fail off. Only the meter of the host can fail the song.
 - **Meter icons:** On a client, `FailMeter` shows an icon for each player in the host's `meter` message, at the host's value (`LinkController.BandMeterMarkers`). A player that the host does not count has no icon.
 - **Band total:** The score box shows the band total and stars (`GameManager.ScoreBoxScore` and `ScoreBoxStars`). It adds the score and band bonus that each player's own game reports, for players with a track, and gets stars from all their cutoffs. It is not in `BandScore` or in saved scores.
+- **Score screen:** The header shows the same band total and stars as the score box (`ScoreScreenStats.BandScore` and `BandStars`). It shows only these values. `RecordScores` saves the score of the local players. The card of a friend's player uses the score, band bonus and stars that the friend's game reports (`GameManager.ScoreCardStats`). The other stats come from the mirror. Thus all games show the same numbers.
 
 ### 9. Song time and synced start
 
@@ -181,7 +182,7 @@ These fixes are not online code. Move them to a separate PR.
 - **Setting off:** When `LinkEnable` is off, areas 7 to 10 and 12 must operate the same as on `dev`. Each reviewer must examine this in their files.
 - **Peers that are not safe:** The protection is in areas 1, 3, 4 and 5. One reviewer must examine these four areas together. Commits `8af572acf` and `6d3b90e7c` show the changes from the security review.
 - **Shared files:** `GameManager.Loading.cs` has changes for areas 7, 8 and 9. `CommandLineArgs.cs` and `SettingsManager*.cs` have changes for areas 10, 11 and 12. `LinkController.cs` has changes for areas 6 and 12.
-- **YARG.Core:** Some limitations exist because the branch does not change Core. The Core maintainers must select the changes that they want.
+- **YARG.Core:** Some limitations exist because the branch does not change Core. The Core maintainers must select the changes that they want. The list is in "YARG.Core follow-up work" in `native-library-plan.md`.
 - **Tests:** `native-link.yml` runs `YARG.Link.Tests` when `Native/YargLink/`, the plugins, `Integration/Link/Transport/`, `Integration/Link/Session/`, `Tests/YARG.Link.Tests/`, `scripts/NativeBuild/` or the workflow change. These are all the files that the tests compile or load. The other files in `Integration/Link` use Unity, and no CI test compiles them. CI does not run `YARG.Link.Replay.Tests`, which tests `ReplayBlobCheck.cs`. Should CI run these tests when `ReplayBlobCheck.cs` or the YARG.Core pin changes?
 
 ## Maintenance tasks
