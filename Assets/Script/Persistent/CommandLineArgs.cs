@@ -68,6 +68,11 @@ namespace YARG
         private const string LINK_LAN_ARG = "-link-lan";
 
         /// <summary>
+        /// Discord: use another Discord application for Rich Presence and invites, for testing with a private app.
+        /// </summary>
+        public const string DISCORD_APP_ID_ARG = "-discord-app-id";
+
+        /// <summary>
         /// Unity's own window arguments. When any of these is given, the launch command decides the window, so
         /// the saved Fullscreen Mode and Resolution settings aren't applied at startup (they still apply when
         /// changed in the settings menu).
@@ -94,6 +99,8 @@ namespace YARG
         public static int?   LinkPort      { get; private set; }
         public static string LinkName { get; private set; }
         public static bool   LinkLan  { get; private set; }
+
+        public static long? DiscordAppId { get; private set; }
 
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSplashScreen)]
@@ -178,6 +185,14 @@ namespace YARG
                         break;
                     case LINK_LAN_ARG:
                         LinkLan = true;
+                        break;
+                    case DISCORD_APP_ID_ARG:
+                        i++;
+                        if (i < args.Length && long.TryParse(args[i], out long appId) && appId > 0)
+                        {
+                            DiscordAppId = appId;
+                        }
+
                         break;
                 }
             }
