@@ -657,12 +657,9 @@ Phase 5 notes (2026-11-17):
   or goes online, and logs the failure only once. `-discord-app-id` (or `YARG_DISCORD_APP_ID`) uses
   another Discord application, for testing with a private app; the launch command it registers then
   carries the same option.
-- **"Discord invites" setting** (Experimental, off by default, shown with the link). Discord only offers
-  Invite and Ask to Join while there's a party to advertise. With the setting on, the game hosts a
-  session quietly in the menu whenever Discord is connected and there's no session: no toast, no
-  clipboard copy, problems only logged, and no retry until the setting is turned
-  back on. Such a session closes again when Discord or the setting goes away, if nobody joined. Anyone
-  with its invite code can join while it is open, which the setting's description says.
+- **Inviting needs a session.** Discord only offers Invite and Ask to Join while there's a party to
+  advertise, so the player hosts first. The Game SDK doesn't tell the game when someone opens Discord's
+  invite menu, so it can't host in response to it.
 - **Pause on focus loss.** Pausing online pauses the whole band, so online play has its own setting,
   "Pause On Focus Loss in Online Mode" (off by default). The normal setting is ignored while the link is
   enabled.

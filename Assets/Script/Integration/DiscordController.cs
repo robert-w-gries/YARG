@@ -86,9 +86,6 @@ namespace YARG.Integration
         // Whether we were in an online session last frame, so we only try to reach Discord again on joining one
         private bool _wasOnline;
 
-        /// <summary>Whether we've reached Discord, so it can show our activity and invites.</summary>
-        public bool IsConnected => _discord is not null;
-
         public void Initialize()
         {
             _initialized = true;

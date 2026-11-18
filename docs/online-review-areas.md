@@ -32,7 +32,7 @@ C# paths start at `Assets/Script/`. Line counts are added lines, without `.meta`
 | 9 | Song time and synced start | Audio, playback | `SongRunner.cs`, `LinkController.ClockSync.cs`, `GameManager.Loading.cs` | 300 |
 | 10 | Lobby, settings, text, launch options | Menus, localization | `LinkLobby.cs`, `MainMenu.*`, `MenuManager.cs`, settings, `en-US.json`, `CommandLineArgs.cs` | 740 |
 | 11 | Window launch arguments | Settings, display | `ScreenHelper.cs`, `SettingsManager*.cs`, `CommandLineArgs.cs` | 60 |
-| 12 | Discord invites | Discord Game SDK | `Integration/DiscordController.cs`, `LinkController.cs` (`UpdateDiscordHost`) | 380 |
+| 12 | Discord invites | Discord Game SDK | `Integration/DiscordController.cs`, `LinkController.cs` | 380 |
 
 ### 1. Native P2P transport (Rust)
 
@@ -165,7 +165,7 @@ Examine these items:
 - **Join secret:** The join secret is the invite code of the session. The party ID is a hash of the code. Thus all members show the same party, and the activity does not show the code. The game does not show a code that is longer than 127 bytes (a code with addresses). A bare endpoint ID is shorter.
 - **Join:** When a player accepts an invite, the game joins the session. During a song, the game waits until the player is in the menu. When `LinkEnable` is off, a toast tells the player how to turn it on.
 - **Launch command:** Outside the Editor, the game registers its launch command with Discord. Thus Discord can start the game for an invite. `-discord-app-id` selects a different Discord application for tests.
-- **"Discord invites" setting** (`LinkDiscordInvites`, Experimental, off by default): Discord shows Invite and Ask to Join only when there is a party. With this setting, the game hosts a session in the menu when Discord is connected. It does not show a toast or copy the code. If hosting fails, it only writes to the log and does not try again. If no person joined, the session closes when Discord or the setting goes away. Is it acceptable that a session is open in the background?
+- **Hosting first:** Discord shows Invite and Ask to Join only when there is a party, so the player must host a session first. The Game SDK does not tell the game when the player opens the invite menu in Discord.
 - **SDK:** The Discord Game SDK is deprecated. The long-term replacement is the Discord Social SDK.
 - **Not tested:** Invites between two computers and two Discord accounts, and the start from Discord in a release build.
 
