@@ -143,12 +143,6 @@ namespace YARG.Integration.Link
 
         private GUIStyle _scoreboardStyle;
 
-        /// <summary>Whether the session was opened so Discord friends can join, not by the player.</summary>
-        private bool _hostedForDiscord;
-
-        /// <summary>Hosting for Discord failed, so it isn't tried again until the setting is turned back on.</summary>
-        private bool _discordHostFailed;
-
         /// <summary>Whether Settings › Experimental › "Enable online link" is on.</summary>
         public static bool IsEnabled => SettingsManager.Settings?.LinkEnable.Value ?? false;
 
@@ -210,8 +204,6 @@ namespace YARG.Integration.Link
                 _launchOptionsUsed = true;
                 OpenFromLaunchOptions();
             }
-
-            UpdateDiscordHost();
 
             if (_session == null)
             {
@@ -355,20 +347,11 @@ namespace YARG.Integration.Link
             }
         }
 
-        /// <param name="quiet">
-        /// For hosting the player didn't ask for: problems are only logged.
-        /// </param>
-        private bool Open(LinkRole role, string join, bool quiet = false)
+        private bool Open(LinkRole role, string join)
         {
             ILinkTransport transport = CreateNativeTransport(role, out string problem);
             if (transport == null)
             {
-                if (quiet)
-                {
-                    YargLogger.LogFormatWarning("Link: {0}; not hosting for Discord invites", problem);
-                    return false;
-                }
-
                 YargLogger.LogFormatError("Link: {0}", problem);
                 ShowProblem("Online play isn't available", "Online play isn't available on this platform yet.");
                 return false;
@@ -406,50 +389,6 @@ namespace YARG.Integration.Link
                 YargLogger.LogInfo($"Link: hosting as {name}, invite code {LinkSession.ShortTicket(_session.LocalTicket)}");
             }
             return true;
-        }
-
-        /// <summary>
-        /// With Settings › Experimental › "Discord invites" on, keep a session open whenever Discord is connected,
-        /// so friends can be invited or ask to join from Discord without hosting first. Discord only offers
-        /// that while there's a session to advertise. A session hosted for this that nobody joined is closed again
-        /// when Discord or the setting goes away.
-        /// </summary>
-        private void UpdateDiscordHost()
-        {
-            bool setting = SettingsManager.Settings.LinkDiscordInvites.Value;
-            if (!setting)
-            {
-                _discordHostFailed = false;
-            }
-
-            bool wanted = setting && DiscordController.Instance is { IsConnected: true };
-
-            if (_session != null)
-            {
-                if (_hostedForDiscord && !wanted && _session.Members.Count == 0)
-                {
-                    YargLogger.LogInfo("Link: closing the session hosted for Discord invites");
-                    Close();
-                }
-
-                return;
-            }
-
-            // Not while a song that lost its host is counting down, or mid-song at all
-            if (!wanted || _discordHostFailed || _hostGone != null ||
-                GlobalVariables.Instance.CurrentScene != SceneIndex.Menu)
-            {
-                return;
-            }
-
-            if (!Open(LinkRole.Host, null, quiet: true))
-            {
-                _discordHostFailed = true;
-                return;
-            }
-
-            _hostedForDiscord = true;
-            LastHostedInviteCode = _session.LocalTicket;
         }
 
         /// <summary>The name friends see: the first player's profile, or the computer's user.</summary>
@@ -708,7 +647,6 @@ namespace YARG.Integration.Link
         {
             _session?.Dispose();
             _session = null;
-            _hostedForDiscord = false;
             _joinTicket = null;
             _nextJoinTime = double.PositiveInfinity;
             _lastProblem = null;
