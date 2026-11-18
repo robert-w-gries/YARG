@@ -578,6 +578,24 @@ fn flooding_peer_is_disconnected() {
     assert_eq!(messages, limit, "everything up to the limit was kept");
 }
 
+#[test]
+fn peer_that_stops_reading_is_disconnected() {
+    let host = Handle::new(LOCAL_CONFIG);
+    let mut raw = RawPeer::connect(&host.ticket());
+    raw.hello();
+    let (ev, _) = host.expect(YL_EVENT_PEER_CONNECTED);
+
+    // The raw peer never reads, so flow control holds the host's writer and frames pile up
+    let big = vec![0u8; MAX_FRAME - 1];
+    for _ in 0..64 {
+        assert_eq!(host.send(ev.peer, 0, &big), YL_OK);
+    }
+    let (gone, reason) = host.expect(YL_EVENT_PEER_DISCONNECTED);
+    assert_eq!(gone.peer, ev.peer);
+    let reason = String::from_utf8_lossy(&reason).into_owned();
+    assert!(reason.contains("stopped reading"), "{reason}");
+}
+
 /// Over the internet: a bare endpoint ID, found through n0's DNS, with n0's relays available.
 /// Needs network access, so it only runs on request: `cargo test -- --ignored`.
 #[test]

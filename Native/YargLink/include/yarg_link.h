@@ -126,7 +126,11 @@ YL_API int yl_create(const char *config_json, yl_handle **out);
  * handle is destroyed, and peers can't recognise this game from one handle to the next.
  */
 
-/* Close every connection, stop all threads and free the handle. NULL is ignored. */
+/*
+ * Close every connection, stop all threads and free the handle. NULL is ignored. Reliable messages
+ * already queued still go out first, so this blocks for up to about 2.5 s when a peer is slow to
+ * read them; call it off a thread that must not stall (a game's main thread, say).
+ */
 YL_API void yl_destroy(yl_handle *h);
 
 /* What another game passes to yl_connect to reach this one (UTF-8, not null-terminated). */
@@ -146,6 +150,8 @@ YL_API int yl_disconnect(yl_handle *h, uint32_t peer);
 /*
  * Queue a message. Sending to a peer that isn't connected (any more) is silently dropped; the
  * disconnect arrives via yl_poll. So is an unreliable message the current path can't carry.
+ * A peer that stops reading is disconnected once 32 MiB (or 64k messages) of reliable data to it
+ * waits to go out, so nothing buffers without bound.
  */
 YL_API int yl_send(yl_handle *h, uint32_t peer, uint8_t channel, const uint8_t *data, size_t len);
 

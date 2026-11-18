@@ -31,6 +31,8 @@ need a rebuild of this library.
   Incoming connections are capped (`max_peers`, and a handful handshaking at once, each within
   10 s); a game that only joins sets `"accept": false` and refuses them all. A peer whose messages
   pile up unpolled (16k messages or 32 MiB) is disconnected; its datagrams are dropped instead.
+  The same goes the other way: a peer that stops reading is disconnected once 32 MiB (or 64k
+  messages) of reliable data to it waits to go out.
 - **Graceful close.** `yl_disconnect` and `yl_destroy` still deliver reliable messages that were
   already queued, so a goodbye followed by a disconnect arrives. The stream is finished first, and
   the connection closes once the peer has read everything (or after 2 s).

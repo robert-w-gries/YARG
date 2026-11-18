@@ -55,6 +55,12 @@ const INCOMING_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_QUEUED_MESSAGES_PER_PEER: usize = 16 * 1024;
 const MAX_QUEUED_BYTES_PER_PEER: usize = 32 * 1024 * 1024;
 
+/// Reliable messages to one peer that may wait to go out. A peer that stops reading (QUIC flow
+/// control then holds the writer) is disconnected once this much piles up, so it can't make us
+/// buffer whatever the game keeps sending.
+const MAX_OUTGOING_MESSAGES_PER_PEER: usize = 64 * 1024;
+const MAX_OUTGOING_BYTES_PER_PEER: usize = 32 * 1024 * 1024;
+
 pub const MAX_UNRELIABLE: usize = 1024;
 
 /// Events beyond this many are dropped if they're log lines, so a chatty filter with nobody
@@ -172,6 +178,9 @@ struct Peer {
     id: u32,
     conn: OnceLock<Connection>,
     writer: mpsc::UnboundedSender<Write>,
+    /// Frames given to the writer and not yet written, with their bytes.
+    outgoing_messages: AtomicUsize,
+    outgoing_bytes: AtomicUsize,
     /// Every event for this peer is queued while holding this lock, so the game always sees
     /// connected → messages → disconnected, and nothing after that.
     state: Mutex<State>,
@@ -248,6 +257,8 @@ impl Shared {
             id,
             conn: OnceLock::new(),
             writer: tx,
+            outgoing_messages: AtomicUsize::new(0),
+            outgoing_bytes: AtomicUsize::new(0),
             state: Mutex::new(State::Connecting),
             cancel: CancellationToken::new(),
             done: CancellationToken::new(),
@@ -471,6 +482,13 @@ impl Node {
 
         if channel == CHANNEL_RELIABLE {
             let frame = encode_frame(KIND_DATA, data);
+            let messages = peer.outgoing_messages.fetch_add(1, Ordering::AcqRel) + 1;
+            let bytes = peer.outgoing_bytes.fetch_add(frame.len(), Ordering::AcqRel) + frame.len();
+            if messages > MAX_OUTGOING_MESSAGES_PER_PEER || bytes > MAX_OUTGOING_BYTES_PER_PEER {
+                let _guard = self.runtime().enter();
+                self.shared.close_peer(&peer, "peer stopped reading what we sent".into(), false);
+                return Ok(());
+            }
             let _ = peer.writer.send(Write::Frame(frame));
             return Ok(());
         }
@@ -745,7 +763,7 @@ async fn run_peer(
 
     let failure = tokio::select! {
         _ = peer.cancel.cancelled() => None,
-        r = write_loop(&conn, send, rx) => r,
+        r = write_loop(&peer, &conn, send, rx) => r,
         r = read_loop(&shared, &peer, recv) => Some(r),
         r = datagram_loop(&shared, &peer, &conn) => Some(r),
     };
@@ -758,13 +776,20 @@ async fn run_peer(
 }
 
 /// Write queued frames. Returns `None` after a graceful finish, or why the stream broke.
-async fn write_loop(conn: &Connection, mut send: SendStream, mut rx: mpsc::UnboundedReceiver<Write>) -> Option<String> {
+async fn write_loop(
+    peer: &Peer,
+    conn: &Connection,
+    mut send: SendStream,
+    mut rx: mpsc::UnboundedReceiver<Write>,
+) -> Option<String> {
     while let Some(write) = rx.recv().await {
         match write {
             Write::Frame(frame) => {
                 if let Err(e) = send.write_all(&frame).await {
                     return Some(format!("connection lost: {e}"));
                 }
+                peer.outgoing_messages.fetch_sub(1, Ordering::AcqRel);
+                peer.outgoing_bytes.fetch_sub(frame.len(), Ordering::AcqRel);
             }
             Write::Finish => {
                 // Closing right away would discard data the peer hasn't acknowledged yet. Instead

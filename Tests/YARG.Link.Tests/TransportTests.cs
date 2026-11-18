@@ -245,6 +245,26 @@ namespace YARG.Link.Tests
         }
 
         [Test]
+        public void DisposeReturnsBeforeTheGoodbyesGoOut()
+        {
+            if (_kind != "native") Assert.Ignore("only the native transport closes in the background");
+
+            var a = NewTransport();
+            var b = Transport();
+            var (atA, _) = Pair(a, b);
+            a.Send(atA, new byte[] { 42 }, Delivery.Reliable);
+
+            var sw = Stopwatch.StartNew();
+            a.Dispose();
+            Assert.That(sw.ElapsedMilliseconds, Is.LessThan(250));
+            Assert.That(NativeLinkTransport.WaitForClosedHandles(TimeSpan.FromSeconds(5)), Is.True);
+
+            var seen = new List<LinkEvent>();
+            WaitFor(b, e => e.Type == LinkEventType.PeerDisconnected, seen);
+            Assert.That(seen.Where(e => e.Type == LinkEventType.Message).Select(e => e.Data[0]), Is.EqualTo(new[] { 42 }));
+        }
+
+        [Test]
         public void MeasuresRtt()
         {
             var (a, b) = (Transport(), Transport());
