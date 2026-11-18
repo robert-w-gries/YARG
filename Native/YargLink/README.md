@@ -56,7 +56,7 @@ cargo build                   # debug, for tests
 cargo test                    # Rust tests: two handles over localhost, no network needed
 cargo test -- --ignored       # plus a test through n0's DNS and relays (needs internet)
 tests/c/run.sh                # the C harness against the built library
-dotnet test ../../Tests/YARG.Link.Tests   # C# transport and session tests, on this library too
+dotnet test ../../Tests/YARG.Link.Tests   # C# transport and session tests, in memory and on this library
 ```
 
 The toolchain is pinned in `rust-toolchain.toml`.
@@ -103,7 +103,5 @@ To test a session without the lobby UI, see `LinkController`:
 ./YARG
 # Friend
 ./YARG -link-join <invite code>
-# Two copies on one machine without iroh
-./YARG -link-transport loopback
-./YARG -link-join loopback:127.0.0.1:36120
+# Two copies on one machine work the same way; each gets its own endpoint ID
 ```

@@ -9,12 +9,13 @@ using YARG.Integration.Link.Transport;
 namespace YARG.Link.Tests
 {
     /// <summary>The <see cref="ILinkTransport"/> contract, on each transport.</summary>
-    [TestFixture("loopback")]
+    [TestFixture("memory")]
     [TestFixture("native")]
     public class TransportTests
     {
         private readonly List<IDisposable> _disposables = new();
         private readonly string _kind;
+        private MemoryLinkNetwork _network;
 
         public TransportTests(string kind)
         {
@@ -27,10 +28,16 @@ namespace YARG.Link.Tests
                 c.Accept = accept;
                 c.MaxPeers = maxPeers;
             })
-            : new LoopbackLinkTransport(accept: accept, maxPeers: maxPeers);
+            : _network.Transport(accept, maxPeers);
 
         private int MaxReliableSize =>
-            _kind == "native" ? NativeLinkTransport.MAX_RELIABLE_SIZE : LoopbackLinkTransport.MAX_RELIABLE_SIZE;
+            _kind == "native" ? NativeLinkTransport.MAX_RELIABLE_SIZE : MemoryLinkTransport.MAX_RELIABLE_SIZE;
+
+        [SetUp]
+        public void SetUp()
+        {
+            _network = new MemoryLinkNetwork();
+        }
 
         [TearDown]
         public void TearDown()
@@ -70,17 +77,6 @@ namespace YARG.Link.Tests
             WaitFor(a, e => e.Type == LinkEventType.PeerConnected && e.Peer == atA);
             var atB = WaitFor(b, e => e.Type == LinkEventType.PeerConnected).Peer;
             return (atA, atB);
-        }
-
-        [Test]
-        public void ParseTicket()
-        {
-            if (_kind != "loopback") Assert.Ignore("loopback tickets only");
-            Assert.That(LoopbackLinkTransport.ParseTicket("loopback:127.0.0.1:36120"), Is.EqualTo(("127.0.0.1", 36120)));
-            Assert.That(LoopbackLinkTransport.ParseTicket(" localhost:5 "), Is.EqualTo(("localhost", 5)));
-            Assert.Throws<FormatException>(() => LoopbackLinkTransport.ParseTicket("127.0.0.1"));
-            Assert.Throws<FormatException>(() => LoopbackLinkTransport.ParseTicket("loopback:host:99999"));
-            Assert.Throws<FormatException>(() => LoopbackLinkTransport.ParseTicket(""));
         }
 
         [Test]
@@ -164,7 +160,7 @@ namespace YARG.Link.Tests
             var (a, b) = (Transport(), Transport());
             var (atA, atB) = Pair(a, b);
 
-            // Loopback UDP doesn't drop at this rate, but allow for it
+            // Datagrams can be lost even on localhost; allow for it
             var ev = default(LinkEvent);
             for (int attempt = 0; attempt < 5 && ev.Data == null; attempt++)
             {
@@ -269,6 +265,7 @@ namespace YARG.Link.Tests
         {
             var (a, b) = (Transport(), Transport());
             var (atA, _) = Pair(a, b);
+            a.Send(atA, new byte[] { 1 }, Delivery.Reliable);
 
             var sw = Stopwatch.StartNew();
             while (a.GetStats(atA).Rtt == null && sw.Elapsed.TotalSeconds < 3)
@@ -322,7 +319,7 @@ namespace YARG.Link.Tests
             // The error doesn't repeat what was passed, which may be anything from the clipboard
             var e = Assert.Throws<FormatException>(() => a.Connect("hunter2-secret-password"));
             Assert.That(e.Message, Does.Not.Contain("hunter2"));
-            var e2 = Assert.Throws<FormatException>(() => a.Connect("loopback:hunter2"));
+            var e2 = Assert.Throws<FormatException>(() => a.Connect("memory:hunter2"));
             Assert.That(e2.Message, Does.Not.Contain("hunter2"));
         }
 

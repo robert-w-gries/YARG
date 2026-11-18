@@ -46,26 +46,9 @@ namespace YARG
         private const string LINK_HOST_ARG = "-link-host";
 
         /// <summary>
-        /// Online link (development): <c>native</c> (iroh, the default) or <c>loopback</c> (plain TCP/UDP on
-        /// this machine or the LAN, for development).
-        /// </summary>
-        private const string LINK_TRANSPORT_ARG = "-link-transport";
-
-        /// <summary>
-        /// Online link (development, loopback transport): the port to accept connections on.
-        /// </summary>
-        private const string LINK_PORT_ARG = "-link-port";
-
-        /// <summary>
         /// Online link (development): the name other players see.
         /// </summary>
         private const string LINK_NAME_ARG = "-link-name";
-
-        /// <summary>
-        /// Online link (development, loopback transport): accept connections from the local network, not just
-        /// this machine.
-        /// </summary>
-        private const string LINK_LAN_ARG = "-link-lan";
 
         /// <summary>
         /// Discord: use another Discord application for Rich Presence and invites, for testing with a private app.
@@ -93,12 +76,9 @@ namespace YARG
         public static string DownloadLocation   { get; private set; }
         public static string PersistentDataPath { get; private set; }
 
-        public static string LinkJoin      { get; private set; }
-        public static bool   LinkHost      { get; private set; }
-        public static string LinkTransport { get; private set; }
-        public static int?   LinkPort      { get; private set; }
+        public static string LinkJoin { get; private set; }
+        public static bool   LinkHost { get; private set; }
         public static string LinkName { get; private set; }
-        public static bool   LinkLan  { get; private set; }
 
         public static long? DiscordAppId { get; private set; }
 
@@ -159,22 +139,6 @@ namespace YARG
                     case LINK_HOST_ARG:
                         LinkHost = true;
                         break;
-                    case LINK_TRANSPORT_ARG:
-                        i++;
-                        if (i < args.Length)
-                        {
-                            LinkTransport = args[i];
-                        }
-
-                        break;
-                    case LINK_PORT_ARG:
-                        i++;
-                        if (i < args.Length && int.TryParse(args[i], out int port))
-                        {
-                            LinkPort = port;
-                        }
-
-                        break;
                     case LINK_NAME_ARG:
                         i++;
                         if (i < args.Length)
@@ -182,9 +146,6 @@ namespace YARG
                             LinkName = args[i];
                         }
 
-                        break;
-                    case LINK_LAN_ARG:
-                        LinkLan = true;
                         break;
                     case DISCORD_APP_ID_ARG:
                         i++;
