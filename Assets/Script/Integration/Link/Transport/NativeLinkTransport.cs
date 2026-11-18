@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -281,14 +282,64 @@ namespace YARG.Integration.Link.Transport
             return Encoding.UTF8.GetString(buf, 0, (int) len);
         }
 
+        /// <summary>
+        /// Close the transport. Returns at once: the library still sends queued reliable messages
+        /// (goodbyes) first, which can take a few seconds with a slow peer, so that happens on a
+        /// thread of its own. Call <see cref="WaitForClosedHandles"/> before the process exits.
+        /// </summary>
         public void Dispose()
         {
             var handle = Interlocked.Exchange(ref _handle, IntPtr.Zero);
             if (handle != IntPtr.Zero)
             {
-                Native.Destroy(handle);
+                DestroyInBackground(handle);
             }
             GC.SuppressFinalize(this);
+        }
+
+        private static readonly List<Thread> _closingHandles = new();
+
+        private static void DestroyInBackground(IntPtr handle)
+        {
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    Native.Destroy(handle);
+                }
+                finally
+                {
+                    lock (_closingHandles) _closingHandles.Remove(Thread.CurrentThread);
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "YargLink close",
+            };
+            lock (_closingHandles)
+            {
+                _closingHandles.Add(thread);
+                thread.Start();
+            }
+        }
+
+        /// <summary>
+        /// Wait for transports closed by <see cref="Dispose"/> to finish, so their goodbyes go out
+        /// before the process exits.
+        /// </summary>
+        /// <returns>Whether all of them finished within <paramref name="timeout"/>.</returns>
+        public static bool WaitForClosedHandles(TimeSpan timeout)
+        {
+            Thread[] threads;
+            lock (_closingHandles) threads = _closingHandles.ToArray();
+
+            var deadline = DateTime.UtcNow + timeout;
+            foreach (var thread in threads)
+            {
+                var left = deadline - DateTime.UtcNow;
+                if (left < TimeSpan.Zero || !thread.Join(left)) return false;
+            }
+            return true;
         }
 
         ~NativeLinkTransport()
