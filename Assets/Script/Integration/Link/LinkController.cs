@@ -2,8 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using Cysharp.Threading.Tasks;
 using Newtonsoft.Json.Linq;
@@ -55,18 +53,12 @@ namespace YARG.Integration.Link
     /// The host's fail meter is the band's: see <see cref="UpdateBandMeter"/>.
     /// </para>
     /// <para>
-    /// The transport is <see cref="NativeLinkTransport"/> (iroh: hole punching, relays, encryption) unless
-    /// <c>-link-transport loopback</c> (<c>YARG_LINK_TRANSPORT</c>) or a <c>loopback:</c> ticket picks
-    /// <see cref="LoopbackLinkTransport"/>, which only reaches this machine or the LAN. Hosting falls back
-    /// to loopback when this platform has no native library. For loopback, <c>-link-port</c>
-    /// (<c>YARG_LINK_PORT</c>) picks the port (<see cref="DEFAULT_PORT"/> by default) and <c>-link-lan</c>
-    /// (<c>YARG_LINK_LAN=1</c>) accepts connections from the local network.
+    /// The transport is always <see cref="NativeLinkTransport"/> (iroh: hole punching, relays, encryption).
+    /// Without the YargLink library for this platform, online play isn't available.
     /// </para>
     /// </remarks>
     public partial class LinkController : MonoBehaviour
     {
-        public const int DEFAULT_PORT = 36120;
-
         /// <summary>Give up on a synced start after this long and start alone.</summary>
         private const double MAX_WAIT_SECONDS = 120.0;
 
@@ -364,75 +356,21 @@ namespace YARG.Integration.Link
         }
 
         /// <param name="quiet">
-        /// For hosting the player didn't ask for: problems are only logged, and there's no loopback fallback.
+        /// For hosting the player didn't ask for: problems are only logged.
         /// </param>
         private bool Open(LinkRole role, string join, bool quiet = false)
         {
-            int? port = CommandLineArgs.LinkPort;
-            if (port == null && int.TryParse(Environment.GetEnvironmentVariable("YARG_LINK_PORT"), out int envPort))
+            ILinkTransport transport = CreateNativeTransport(role, out string problem);
+            if (transport == null)
             {
-                port = envPort;
-            }
-            bool lan = CommandLineArgs.LinkLan || Environment.GetEnvironmentVariable("YARG_LINK_LAN") == "1";
-
-            string kind = CommandLineArgs.LinkTransport ?? Environment.GetEnvironmentVariable("YARG_LINK_TRANSPORT");
-            if (string.IsNullOrWhiteSpace(kind))
-            {
-                kind = join != null && join.StartsWith(LoopbackLinkTransport.TICKET_PREFIX,
-                    StringComparison.OrdinalIgnoreCase) ? "loopback" : "native";
-            }
-
-            ILinkTransport transport = null;
-            if (!kind.Equals("loopback", StringComparison.OrdinalIgnoreCase))
-            {
-                transport = CreateNativeTransport(role, out string problem);
-                if (transport == null && quiet)
+                if (quiet)
                 {
                     YargLogger.LogFormatWarning("Link: {0}; not hosting for Discord invites", problem);
                     return false;
                 }
-                if (transport == null && role == LinkRole.Join)
-                {
-                    YargLogger.LogFormatError("Link: {0}", problem);
-                    ShowProblem("Online play isn't available", "Online play isn't available on this platform yet.");
-                    return false;
-                }
-                if (transport == null)
-                {
-                    YargLogger.LogWarning($"Link: {problem}; hosting on the loopback transport instead");
-                }
-            }
 
-            try
-            {
-                transport ??= CreateTransport(role, port ?? (role == LinkRole.Host ? DEFAULT_PORT : 0), lan);
-            }
-            catch (SocketException e) when (port == null && role == LinkRole.Host)
-            {
-                // Probably another instance on this machine; host on any free port instead
-                YargLogger.LogWarning($"Link: port {DEFAULT_PORT} is in use ({e.Message}), using another one");
-                try
-                {
-                    transport = CreateTransport(role, 0, lan);
-                }
-                catch (SocketException e2)
-                {
-                    YargLogger.LogFormatError("Link: couldn't open a socket: {0}", e2.Message);
-                    if (!quiet)
-                    {
-                        ShowProblem("Couldn't start online play",
-                            $"Couldn't open a network connection: {e2.Message}");
-                    }
-                    return false;
-                }
-            }
-            catch (SocketException e)
-            {
-                YargLogger.LogFormatError("Link: couldn't open a socket: {0}", e.Message);
-                if (!quiet)
-                {
-                    ShowProblem("Couldn't start online play", $"Couldn't open port {port}: {e.Message}");
-                }
+                YargLogger.LogFormatError("Link: {0}", problem);
+                ShowProblem("Online play isn't available", "Online play isn't available on this platform yet.");
                 return false;
             }
 
@@ -620,14 +558,6 @@ namespace YARG.Integration.Link
             }
         }
 
-        private static LoopbackLinkTransport CreateTransport(LinkRole role, int port, bool lan)
-        {
-            bool accept = role == LinkRole.Host;
-            return lan
-                ? new LoopbackLinkTransport(port, IPAddress.Any, FindLanAddress(), accept, TransportMaxPeers)
-                : new LoopbackLinkTransport(port, accept: accept, maxPeers: TransportMaxPeers);
-        }
-
         /// <summary>
         /// Connections a transport takes at once: every joiner the session admits, plus room for a few still
         /// saying hello (which the session caps itself).
@@ -639,26 +569,6 @@ namespace YARG.Integration.Link
                 var defaults = new LinkSessionOptions();
                 return defaults.MaxMembers + defaults.MaxUnadmittedPeers;
             }
-        }
-
-        private static string FindLanAddress()
-        {
-            try
-            {
-                foreach (var address in Dns.GetHostAddresses(Dns.GetHostName()))
-                {
-                    if (address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address))
-                    {
-                        return address.ToString();
-                    }
-                }
-            }
-            catch (SocketException)
-            {
-                // Fall back to loopback
-            }
-
-            return null;
         }
 
         private void ConnectToHost()
