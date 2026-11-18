@@ -10,14 +10,17 @@ using YARG.Integration.Link.Transport;
 
 namespace YARG.Link.Tests
 {
-    /// <summary>Several sessions on real transports (loopback, and native when it's built), in one process.</summary>
-    [TestFixture("loopback")]
+    /// <summary>
+    /// Several sessions in one process, on the in-memory transport and on the native one when it's built.
+    /// </summary>
+    [TestFixture("memory")]
     [TestFixture("native")]
     public class SessionTests
     {
         private static readonly Stopwatch Clock = Stopwatch.StartNew();
         private readonly List<Member> _all = new();
         private readonly string _transport;
+        private MemoryLinkNetwork _network;
 
         public SessionTests(string transport)
         {
@@ -25,11 +28,18 @@ namespace YARG.Link.Tests
         }
 
         private ILinkTransport NewTransport() =>
-            _transport == "native" ? NativeLibrary.Transport() : new LoopbackLinkTransport();
+            _transport == "native" ? NativeLibrary.Transport() : _network.Transport();
+
+        [SetUp]
+        public void SetUp()
+        {
+            _network = new MemoryLinkNetwork();
+        }
 
         private sealed class Member : IDisposable
         {
             public readonly LinkSession Session;
+            public readonly ILinkTransport Transport;
             public readonly List<string> Log = new();
             public readonly List<SongInfo> LoadRequests = new();
             public readonly List<double> Starts = new();
@@ -42,6 +52,7 @@ namespace YARG.Link.Tests
             {
                 var options = new LinkSessionOptions { Name = name, GameVersion = game, StartLeadSeconds = 0.5 };
                 configure?.Invoke(options);
+                Transport = transport;
                 Session = new LinkSession(transport, role, options, () => Clock.Elapsed.TotalSeconds);
                 Session.LogInfo = Log.Add;
                 Session.LogWarning = m => Log.Add("WARN " + m);
@@ -426,6 +437,23 @@ namespace YARG.Link.Tests
             PumpUntil(() => left.Count == 1);
             Assert.That(left[0].ConnectionLost, Is.False);
             Assert.That(left[0].LeftReason, Is.EqualTo("left the session"));
+        }
+
+        [Test]
+        public void HostTellsLosingTheConnectionFromLeaving()
+        {
+            if (_transport != "memory") Assert.Ignore("only the in-memory transport can cut a connection");
+
+            var (host, a, b) = ThreeMembers();
+            var left = new List<LinkMember>();
+            host.Session.MemberLeft += left.Add;
+
+            ((MemoryLinkTransport) a.Transport).SeverAll();
+            PumpUntil(() => left.Count == 1 && a.Disconnects.Count == 1 && b.HasMembers("Host"));
+            Assert.That(left[0].Name, Is.EqualTo("A"));
+            Assert.That(left[0].ConnectionLost, Is.True);
+            // The host's code still works, so the joiner may try again
+            Assert.That(a.Disconnects[0].CanRetry, Is.True);
         }
     
         [Test]

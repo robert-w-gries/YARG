@@ -4,7 +4,8 @@
     Unit tests for the online link's transport and session layers, which are plain .NET so they can be
     tested without Unity. Builds the sources straight from Assets/. Run with:
       dotnet test Tests/YARG.Link.Tests
-    Tests on the native transport need Native/YargLink built (`cargo build` there) and are skipped
+    Each suite runs on MemoryLinkTransport (in this project, never in the game) and on the native
+    transport. The native runs need Native/YargLink built (`cargo build` there) and are skipped
     otherwise.
   -->
 

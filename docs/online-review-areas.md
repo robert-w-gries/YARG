@@ -6,10 +6,10 @@ This file divides the `online-native` branch into areas. Each area has a reviewe
 
 The branch adds experimental peer-to-peer online play. Friends join a session with an invite code. They play a song together and see the highways, scores and band fail meter of each player.
 
-- **Compare with `dev`:** `dev...online-native` has 24 commits and 96 files (+16,545 / −122). Do not compare with `master`. Local `master` does not have 346 upstream commits from `dev`.
-- **New code:** approximately 4,900 lines of C# in `Assets/Script/Integration/Link`, the Rust library in `Native/YargLink`, 1,900 lines of tests and the native build tool.
+- **Compare with `dev`:** `dev...online-native` has 39 commits and 117 files (+19,359 / −189). Do not compare with `master`. Local `master` does not have 346 upstream commits from `dev`.
+- **New code:** approximately 6,900 lines of C# in `Assets/Script/Integration/Link`, the Rust library in `Native/YargLink`, 1,800 lines of tests and the native build tool.
 - **Generated files:** `Cargo.lock` (3,862 lines) and three plugin binaries (40 MB) in `Assets/Plugins/YargLink`. Make sure that they are reproducible. Do not review their content.
-- **Changes to existing code:** 20 files, +675 / −66. The "Online" menu entry in `MainMenu.prefab` has 247 of these lines.
+- **Changes to existing code:** 32 files, approximately +1,360 / −130, without area 11 and the unrelated fixes. The "Online" menu entry in `MainMenu.prefab` has 247 of these lines. Discord invites in `DiscordController.cs` have approximately 300.
 - **Setting:** The `LinkEnable` setting (Experimental) controls all online code. It is off by default.
 - **YARG.Core:** No changes. The submodule pin is the same as on `dev`.
 
@@ -21,17 +21,18 @@ C# paths start at `Assets/Script/`. Line counts are added lines, without `.meta`
 
 | # | Area | Reviewer skills | Main paths | Lines |
 | --- | --- | --- | --- | --- |
-| 1 | Native P2P transport | Rust, QUIC, FFI | `Native/YargLink/` | 2,500 + `Cargo.lock` |
+| 1 | Native P2P transport | Rust, QUIC, FFI | `Native/YargLink/` | 2,600 + `Cargo.lock` |
 | 2 | Native build, CI, binaries | Build and release | `scripts/NativeBuild/`, `.github/workflows/native-link.yml`, `Assets/Plugins/YargLink/` | 710 + 3 binaries |
-| 3 | C# transport | C# interop, sockets | `Integration/Link/Transport/`, `NativeLinkLibrary.cs` | 1,470 + 430 tests |
-| 4 | Session protocol | Network protocols | `Integration/Link/Session/` | 1,720 + 820 tests |
+| 3 | C# transport | C# interop | `Integration/Link/Transport/`, `NativeLinkLibrary.cs`, `Tests/YARG.Link.Tests/MemoryLinkTransport.cs` | 870 + 750 tests |
+| 4 | Session protocol | Network protocols | `Integration/Link/Session/` | 1,940 + 1,000 tests |
 | 5 | Replay data from peers | YARG.Core replays | `ReplayBlobCheck.cs` | 300 + 260 tests |
-| 6 | Online controller | Gameplay | `LinkController.cs`, `RemoteInputFeed.cs` | 1,770 |
+| 6 | Online controller | Gameplay | `LinkController.cs`, `LinkController.PauseSync.cs`, `LinkController.HostLoss.cs`, `RemoteInputFeed.cs` | 2,900 |
 | 7 | Friends' tracks | Track, player, visuals | `Gameplay/Player/*`, `TrackElements/*`, `YargPlayer.cs`, `GameManager.Loading.cs` | 250 |
 | 8 | Scores and band fail meter | Engine, scores | `GameManager.cs`, `FailMeter.cs`, `LinkController.BandMeter.cs` | 350 |
 | 9 | Song time and synced start | Audio, playback | `SongRunner.cs`, `LinkController.ClockSync.cs`, `GameManager.Loading.cs` | 300 |
-| 10 | Lobby, settings, text, launch options | Menus, localization | `LinkLobby.cs`, `MainMenu.*`, `MenuManager.cs`, settings, `en-US.json`, `CommandLineArgs.cs` | 720 |
+| 10 | Lobby, settings, text, launch options | Menus, localization | `LinkLobby.cs`, `MainMenu.*`, `MenuManager.cs`, settings, `en-US.json`, `CommandLineArgs.cs` | 740 |
 | 11 | Window launch arguments | Settings, display | `ScreenHelper.cs`, `SettingsManager*.cs`, `CommandLineArgs.cs` | 60 |
+| 12 | Discord invites | Discord Game SDK | `Integration/DiscordController.cs`, `LinkController.cs` (`UpdateDiscordHost`) | 380 |
 
 ### 1. Native P2P transport (Rust)
 
@@ -40,8 +41,8 @@ The library connects to other games with a ticket. It sends reliable data on one
 Examine these items:
 
 - **FFI safety:** Each export catches panics (`YL_ERR_PANIC`). The library does not call managed code. The game polls events from `Update()`.
-- **Limits:** Reliable frames are 1 MiB maximum. A hello is 64 bytes maximum. The library disconnects a peer that has more than 16k unread messages or 32 MiB.
-- **Close:** `yl_disconnect` and `yl_destroy` send the queued reliable messages before they close the connection (2 s maximum).
+- **Limits:** Reliable frames are 1 MiB maximum. A hello is 64 bytes maximum. The library disconnects a peer that has more than 16k unread messages or 32 MiB. It also disconnects a peer that does not read: more than 64k messages or 32 MiB that wait to go out to the peer.
+- **Close:** `yl_disconnect` and `yl_destroy` send the queued reliable messages before they close the connection (2 s maximum). Thus `yl_destroy` can block for approximately 2.5 s.
 - **Identity:** Each handle gets a new random endpoint ID. The library does not write to the disk. The logs show only a short part of an ID.
 - **Dependencies:** iroh and its dependencies in `Cargo.lock`. The library uses the public relays and DNS of n0.
 
@@ -56,15 +57,16 @@ Examine these items:
 - **Reproducible builds:** CI fails if the Linux or macOS plugin is different from the committed file (`--verify-committed-plugin`). CI only tests the Windows plugin.
 - **Platforms:** Linux uses glibc 2.31 (`ubuntu:20.04`). macOS has one universal binary with the ad-hoc signature from the linker. Windows uses a static CRT.
 - **Size:** Windows 10 MB, Linux 12 MB, macOS 18 MB.
+- **Current plugins:** All three plugins are from CI run 44234338625 (commit `2c9936a43`, ABI 3). Before this run, the Windows and macOS plugins were ABI 1 builds. The game did not load them. `1927bd431` also restored the CI-built `libyarg_audio.so` from `dev`. The Editor had built it again on a host with glibc 2.43.
 
 ### 3. C# transport
 
-`ILinkTransport` is the interface for the session layer. `NativeLinkTransport` calls the Rust library. `LoopbackLinkTransport` uses TCP and UDP for development. If the maintainers do not accept Rust, replace only `NativeLinkTransport`.
+`ILinkTransport` is the interface for the session layer. `NativeLinkTransport` calls the Rust library. It is the only transport in the game. The tests also use `MemoryLinkTransport` (`Tests/YARG.Link.Tests`), which sends messages in memory. If the maintainers do not accept Rust, replace only `NativeLinkTransport`.
 
 Examine these items:
 
-- **Interop:** The buffers for `yl_poll` and the handle lifetime in `Dispose`.
-- **Loopback:** Only launch options or a `loopback:` ticket select it. It accepts LAN connections only with `-link-lan`. Is this acceptable in release builds?
+- **Interop:** The buffers for `yl_poll` and the handle lifetime in `Dispose`. `Dispose` calls `yl_destroy` on a new thread, because `yl_destroy` can block. When the game quits, it waits a maximum of 3 s for these threads (`WaitForClosedHandles`).
+- **Test transport:** `MemoryLinkTransport` must obey the same contract as the native transport: reliable messages in order, a goodbye before the disconnect, one disconnect for each peer, and the same size limits. The transport and session tests run on the two transports. `Sever` and `SeverAll` cut a connection without a goodbye. `DropUnreliable` loses datagrams.
 
 ### 4. Session protocol
 
@@ -98,8 +100,9 @@ Examine these items:
 
 Examine these items:
 
-- **Size:** The class has 1,575 lines. Must it be divided before the merge?
+- **Size:** `LinkController.cs` has 1,802 lines. The partial files for pause sync, host loss, the band meter and the clock sync have 1,510 more. Must the class be divided more before the merge?
 - **Modes:** `CanMirror` does not send vocals or pro guitar. The plan gives the causes.
+- **Leave and host loss:** `LinkController.HostLoss.cs`. When the host selects Back to Library, the host can leave with the party (`endsong`) or leave alone. The host removes a friend that left the song or that sent no inputs for 5 s (`dropped`). A joiner without a host shows a countdown and goes back to the library. There is no host migration.
 - **Scoreboard:** The IMGUI scoreboard is a debugging aid, off by default (Settings › Debug › Online link scoreboard, shown while the link is enabled). The band's score and stars are in the normal score box.
 
 ### 7. Friends' tracks
@@ -145,11 +148,25 @@ Examine these items:
 
 - **Prefab:** `MainMenu.prefab` has 247 new lines for one `MenuEntry`.
 - **Text:** The messages in `LinkController` are English text in the code. Only `en-US.json` has the new keys. Must the messages be localized before the merge?
-- **Launch options:** Must the development options (`-link-host`, `-link-join`, `-link-transport` and the `YARG_LINK_*` variables) be in release builds?
+- **Launch options:** Must the development options (`-link-host`, `-link-join`, `-link-name`, `-discord-app-id` and the `YARG_LINK_*` and `YARG_DISCORD_APP_ID` variables) be in release builds?
+- **Pause on focus loss:** A pause online stops all players. Thus online play has a separate setting, "Pause On Focus Loss in Online Mode" (`PauseOnFocusLossOnline`, off by default). When `LinkEnable` is on, the game ignores the usual setting.
 
 ### 11. Window launch arguments
 
 The Unity window arguments (for example, `-screen-width` and `-window-mode`) now override the saved display settings at startup. This change is not online code. Move it to a separate PR.
+
+### 12. Discord invites
+
+`DiscordController` shows the online session as a private Discord party. Friends join from a Discord invite or with "Ask to Join". The link code does not use Discord.
+
+Examine these items:
+
+- **Join secret:** The join secret is the invite code of the session. The party ID is a hash of the code. Thus all members show the same party, and the activity does not show the code. The game does not show a code that is longer than 127 bytes (a code with addresses). A bare endpoint ID is shorter.
+- **Join:** When a player accepts an invite, the game joins the session. During a song, the game waits until the player is in the menu. When `LinkEnable` is off, a toast tells the player how to turn it on.
+- **Launch command:** Outside the Editor, the game registers its launch command with Discord. Thus Discord can start the game for an invite. `-discord-app-id` selects a different Discord application for tests.
+- **"Discord invites" setting** (`LinkDiscordInvites`, Experimental, off by default): Discord shows Invite and Ask to Join only when there is a party. With this setting, the game hosts a session in the menu when Discord is connected. It does not show a toast or copy the code. If hosting fails, it only writes to the log and does not try again. If no person joined, the session closes when Discord or the setting goes away. Is it acceptable that a session is open in the background?
+- **SDK:** The Discord Game SDK is deprecated. The long-term replacement is the Discord Social SDK.
+- **Not tested:** Invites between two computers and two Discord accounts, and the start from Discord in a release build.
 
 ## Unrelated fixes
 
@@ -161,11 +178,11 @@ These fixes are not online code. Move them to a separate PR.
 ## Items for all areas
 
 - **Layers:** Each layer uses only the layer below it: Rust library (1), transport (3), session (4), controller (6), game hooks (7 to 10). The session and transport code must not use Unity or gameplay types.
-- **Setting off:** When `LinkEnable` is off, areas 7 to 10 must operate the same as on `dev`. Each reviewer must examine this in their files.
+- **Setting off:** When `LinkEnable` is off, areas 7 to 10 and 12 must operate the same as on `dev`. Each reviewer must examine this in their files.
 - **Peers that are not safe:** The protection is in areas 1, 3, 4 and 5. One reviewer must examine these four areas together. Commits `8af572acf` and `6d3b90e7c` show the changes from the security review.
-- **Shared files:** `GameManager.Loading.cs` has changes for areas 7, 8 and 9. `CommandLineArgs.cs` and `SettingsManager*.cs` have changes for areas 10 and 11.
+- **Shared files:** `GameManager.Loading.cs` has changes for areas 7, 8 and 9. `CommandLineArgs.cs` and `SettingsManager*.cs` have changes for areas 10, 11 and 12. `LinkController.cs` has changes for areas 6 and 12.
 - **YARG.Core:** Some limitations exist because the branch does not change Core. The Core maintainers must select the changes that they want.
-- **Tests:** `native-link.yml` runs `YARG.Link.Tests` only when `Native/YargLink/` or the plugins change. CI does not run `YARG.Link.Replay.Tests`. Should CI run both tests for all changes in `Integration/Link`?
+- **Tests:** `native-link.yml` runs `YARG.Link.Tests` when `Native/YargLink/`, the plugins, `Integration/Link/Transport/`, `Integration/Link/Session/`, `Tests/YARG.Link.Tests/`, `scripts/NativeBuild/` or the workflow change. These are all the files that the tests compile or load. The other files in `Integration/Link` use Unity, and no CI test compiles them. CI does not run `YARG.Link.Replay.Tests`, which tests `ReplayBlobCheck.cs`. Should CI run these tests when `ReplayBlobCheck.cs` or the YARG.Core pin changes?
 
 ## Maintenance tasks
 
@@ -177,6 +194,7 @@ If the maintainers merge the branch, these tasks continue after the merge. Each 
 - **Relay server:** If YARG operates a relay, install the operating system updates. Use the same `iroh-relay` version as the iroh version in `Cargo.lock` (1.4.1).
 - **Rust dependencies:** Examine `Cargo.lock` for security problems. If you update a dependency, build the three plugins again with `scripts/NativeBuild/` and commit them.
 - **Plugin check:** CI makes sure that the Linux and macOS plugins agree with the source. CI does not do this check for the Windows plugin. Do this check manually.
+- **Discord:** If Discord changes or removes the Game SDK, move `DiscordController` to the Social SDK. The invite code works without Discord.
 - **Toolchains:** The Linux build uses glibc 2.31 (`ubuntu:20.04`). The macOS build uses the same Xcode version as YargAudio. If the YargAudio toolchain changes, change the YargLink toolchain also. Do not sign the macOS plugin again with `codesign`.
 
 ### When YARG.Core changes
@@ -210,4 +228,5 @@ If the maintainers merge the branch, these tasks continue after the merge. Each 
 5. **Areas 7, 8 and 9:** These areas change existing code. Review them together.
 6. **Area 6:** Review this area after the layers below it and the hooks.
 7. **Area 10:** Make sure that nothing changes when the setting is off.
-8. **Area 11:** Move this area to a separate PR.
+8. **Area 12:** Review this area after area 10.
+9. **Area 11:** Move this area to a separate PR.

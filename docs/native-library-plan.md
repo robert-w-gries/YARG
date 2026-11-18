@@ -36,16 +36,18 @@ We aren't maintainers, so the MVP has to be easy to review and easy to say yes t
 
 Both are tradeoffs against polish, and the MVP write-up should say so.
 
-### Where the work stands (2026-11-15, compared with `dev`)
+### Where the work stands (2026-11-18, compared with `dev`)
 
 - **YARG.Core: no changes.** The pin is the same as on `dev`.
-- **Online code is separate:** about 4,900 lines of C# in `Integration/Link`, plus the Rust library and
+- **Online code is separate:** about 6,900 lines of C# in `Integration/Link`, plus the Rust library and
   tests. Behind an Experimental setting (`LinkEnable`), off by default.
-- **Existing code: 20 files, +675 / −66 lines**, of which 247 are the "Online" main menu entry in
-  `MainMenu.prefab` (a `MenuEntry` instance, hidden while the setting is off). Most of the rest are
-  `IsRemote` checks (no sounds, input viewer, stem muting or rewinds for friends' tracks), plus a small
-  `MenuManager.CurrentMenu` getter and the settings, launch options and text for the link. The ones
-  reviewers will look at most closely:
+- **Existing code: 32 files, about +1,360 / −130 lines** (not counting the screen setting fix and the two
+  unrelated fixes under [Branch strategy](#branch-strategy-yarg-fork)). 247 of them are the "Online" main
+  menu entry in `MainMenu.prefab` (a `MenuEntry` instance, hidden while the setting is off), and about 300
+  are Discord invites in `DiscordController.cs`. Most of the rest are `IsRemote` checks (no sounds, input
+  viewer, stem muting or rewinds for friends' tracks), the hidden online pause options, the band score
+  box, a small `MenuManager.CurrentMenu` getter and the settings, launch options and text for the link.
+  The ones reviewers will look at most closely:
   - **Each player has its own clock.** `BasePlayer.TimeLag` and `PlayerVisualTime` let a friend's track run
     behind the song. Track elements now read the player's time instead of `GameManager.VisualTime`. For local
     players the lag is always 0, so nothing changes for them, but "every track shares one clock" no longer
@@ -60,6 +62,9 @@ Both are tradeoffs against polish, and the MVP write-up should say so.
     `EngineManager` runs with fail off, and `FailMeter` reads `GameManager.BandHappiness` (the host's value
     on a client) instead of `EngineManager.Happiness`. `TrackPlayer.FailFromLink` and
     `GameManager.ReviveFromLink` apply the host's decisions.
+  - **Discord invites.** `DiscordController` advertises the online session as a Discord party and joins
+    a session from an accepted invite. It only reads `LinkController`; nothing in the link depends on
+    Discord.
 - **The biggest ask isn't in the game code: Rust in the native build** (open question 2). It adds a language
   and toolchain to the build, even though it doesn't change YARG's architecture.
 - **The fail meter fits the goals.** The host meter uses `EngineManager` as it is, accepting the star
@@ -213,14 +218,23 @@ public interface ILinkTransport : IDisposable
 
 Implementations:
 
-- `NativeLinkTransport`: the Rust library, used in builds.
-- `LoopbackLinkTransport`: managed localhost/LAN UDP, used for development
-  (two game instances on one machine without rebuilding native code) and for
-  tests. It does no NAT traversal and is not meant for release.
+- `NativeLinkTransport`: the Rust library. The game uses only this one.
+- `MemoryLinkTransport`: in memory, in `Tests/YARG.Link.Tests` only, never in
+  the game. The transport and session suites run on it and on the native
+  transport, so the contract has two implementations. It can also cut a
+  connection without a goodbye and drop datagrams on purpose.
 
 Everything above this interface (`LinkSession`, the lobby, the coordinator,
 the Discord glue) has no idea which transport it is running on. If upstream
 rejects Rust, only `NativeLinkTransport` gets replaced.
+
+*Changed 2026-11-18:* until then the game also had `LoopbackLinkTransport`
+(plain TCP and UDP, for development, chosen by `-link-transport loopback` or a
+`loopback:` ticket, with a fallback to it when a platform had no native
+library). It was removed: every platform now ships the native plugin, two
+copies on one machine work over native, and a plain, unencrypted listener on
+port 36120 had no place in release builds. `-link-transport`, `-link-port`
+and `-link-lan` went with it.
 
 ## Platform builds
 
@@ -360,13 +374,13 @@ Sources: iroh docs on [relays](https://docs.iroh.computer/concepts/relays),
 | **Upstream rejects a Rust toolchain.** The team works in C++, CMake and .NET. | Raise it with maintainers before the PR. Fit Rust into `NativeBuild` and CI exactly the way YargAudio is built. Keep the transport swappable behind `ILinkTransport`. |
 | **Overlap with other multiplayer work.** A separate fork (`asimard1/feature-multiplayer`) has a server-based SignalR lobby (`LobbyHubSession`, `LobbyViewMenu`, soft-hash library matching). It is another experimental implementation and, as far as we know, maintainers have not chosen it. | Mention it in the maintainer discussion and borrow good ideas (for example soft-hash matching). Our design needs no server, which sets it apart. |
 | **Byte-identical build check** (`--verify-committed-plugin`) | Pin the toolchain with `rust-toolchain.toml`, use `--locked`, `--remap-path-prefix`, `codegen-units=1`, `CARGO_INCREMENTAL=0`. Prove it on macOS first. |
-| **Unity cannot unload native libraries.** Rebuilding needs an Editor restart, and Windows locks the DLL. | Do most development on `LoopbackLinkTransport`. Rebuild native code only when the transport itself changes. |
+| **Unity cannot unload native libraries.** Rebuilding needs an Editor restart, and Windows locks the DLL. | C# work uses the committed plugin with no rebuild; the session layer is tested on `MemoryLinkTransport`. Rebuild native code only when the transport itself changes. |
 | **Native state outlives play mode and domain reloads** | Handle-based API, one runtime per handle, `yl_destroy` that is reliable and safe to call twice, torn down from `OnDestroy` and `Application.quitting`. |
 | **Panics or crashes inside the game process** | `catch_unwind` around every exported function, no `panic=abort`, errors returned as status codes. Log through a polled log-event channel. |
 | **Threading** | Rust never calls into C#. C# polls from `Update()`. This also keeps a future IL2CPP switch easy (the project is Mono today). |
 | **Binary size** (iroh + tokio + rustls) | `opt-level="s"`, `lto="fat"`, `strip=true`, `panic="unwind"`, iroh default features trimmed. Measure early; expect several MB per platform, about double for the macOS universal file. |
 | **Version mismatch between friends** | Version handshake on connect: the exact game build. Refuse incompatible peers with a clear message. |
-| **Discord Game SDK is deprecated** | Check that Activity join/invite still works in the bundled `DiscordGameSDK`. The long-term path is Discord's Social SDK. Keep Discord glue isolated so invites also work through a plain copyable ticket. |
+| **Discord Game SDK is deprecated** | Invites use Activity join in the bundled `DiscordGameSDK` (see the phase 5 notes). The long-term path is Discord's Social SDK. The Discord glue stays in `DiscordController`, and invites also work through a plain copyable ticket. |
 | **n0's public relays aren't meant for production** (rate-limited, no uptime guarantee, can change at any time) | Fine for the MVP. Before release, run our own relay with n0's as a fallback; see [Relays and address lookup](#relays-and-address-lookup). |
 | **Song matching across machines** | Today we match on exact `SongEntry.Hash`. Look at soft-hash matching (see the overlapping work above) for charts that differ trivially. |
 
@@ -403,6 +417,11 @@ commit. It is a side fix that multiplayer doesn't need: Unity's window arguments
 and Resolution at startup, which makes it easier to run two instances side by side when testing. It isn't
 counted in the existing-code totals above, and it can go upstream as its own PR or be left out.
 
+Two more fixes on the branch aren't online code either, and are also left out of the totals: a
+`FocusHandler` null reference when the game starts unfocused (`368405d39`), and the unison display
+showing phrases that lost players to a drop-out (`1f9de9f15`). Both also happen in local play.
+`docs/online-review-areas.md` describes them; each can go upstream as its own PR.
+
 ## Planned steps
 
 ### Phase 0: preparation
@@ -413,7 +432,7 @@ counted in the existing-code totals above, and it can go upstream as its own PR 
 ### Phase 1: session layer in C#, on the loopback transport
 
 - [x] Define `ILinkTransport`, `LinkEvent`, `PeerId`, `Delivery`, `PeerStats`.
-- [x] Implement `LoopbackLinkTransport`.
+- [x] Implement `LoopbackLinkTransport`. (Removed 2026-11-18 in favour of a test-only in-memory transport; see [C# interface](#c-interface).)
 - [x] Split `LinkController` into `LinkSession` (peers, version handshake, message routing) and the existing gameplay sync.
 - [x] Port `coordinator.rs` to C#: synced start, ready/decline, timeouts, the RTT-corrected start delay.
 - [x] Define a versioned message schema; JSON is fine for the MVP.
@@ -463,7 +482,7 @@ Phase 2 notes (2026-11-14):
   *Superseded (security review, 2026-11-15):* every session now gets a new identity, so codes expire
   with their session and joiners can't be recognised across sessions. Old key files are deleted. See
   "Security review: admission and identity" below.
-- `LinkController` uses the native transport by default. `-link-transport loopback` (or a `loopback:`
+- *(Loopback superseded 2026-11-18: the game uses only the native transport.)* `LinkController` uses the native transport by default. `-link-transport loopback` (or a `loopback:`
   ticket) picks loopback, and hosting falls back to loopback when the platform has no library yet
   (Windows and macOS until phase 3). The host's invite code is copied to the clipboard. The joiner no
   longer restarts a connection attempt every 5 s (new `LinkSession.IsJoining`), which would have
@@ -587,8 +606,8 @@ Security review: admission and identity (2026-11-15):
   from the native config, and the game deletes an old key file the first time it opens a transport).
   Every host and joiner endpoint gets a new random identity, so a code that leaked stops working when
   its session ends, and a host can't recognise or dial a joiner later. Joiners also refuse incoming
-  connections (`accept: false`). A future Discord join flow needs to hand out each session's code, not a
-  stable one.
+  connections (`accept: false`). The Discord join flow hands out each session's code (see the phase 5
+  notes).
 - **Joiners don't retry after the host ends the session** (`bye` code `left`): the code is dead by then.
   A connection that just dropped is still retried, because the host's endpoint (and so the code) is
   still up.
@@ -605,7 +624,7 @@ Security review: admission and identity (2026-11-15):
 
 ### Phase 5: after MVP
 
-- [ ] Discord invite/"Ask to Join" through the bundled SDK.
+- [x] Discord invite/"Ask to Join" through the bundled SDK.
 - [ ] Soft-hash song matching.
 - [ ] Data Stream relay inside the game (if still wanted).
 - [ ] Self-hosted iroh relay with n0's public relays as a fallback, plus configurable relay URLs and an
@@ -620,6 +639,52 @@ Security review: admission and identity (2026-11-15):
   the host already sends about ten times a second.
 - [ ] Reshape history and open the upstream PR.
 - [ ] Pick from [Future network features](#future-network-features) once the MVP is reviewed.
+
+Phase 5 notes (2026-11-17):
+
+- **Discord invites** (`DiscordController.cs`). While the game is in an online session (hosting, or let
+  in by the host), its Discord activity advertises a private party. The join secret is the session's
+  invite code, and the party ID is a hash of it, so everyone in the session shows the same party without
+  the code being visible to anyone who can see the activity. Party size is the member count; supported
+  platforms is Desktop (left at zero, Discord offers "Join from a supported device"). An invite code
+  longer than Discord's 127-byte secret (one with addresses) isn't advertised, because a shortened code
+  would send friends somewhere else. A bare endpoint ID fits.
+- **Joining from Discord.** Accepting an invite, or having a request to join accepted, joins the session.
+  Mid-song, it waits until the player is back in the menu (with a toast). With the link off, a toast
+  says how to turn it on. Outside the Editor, the game registers its launch command so Discord can start
+  it for an invite.
+- **Reaching Discord.** When Discord isn't running at startup, the game tries again when it gets focus
+  or goes online, and logs the failure only once. `-discord-app-id` (or `YARG_DISCORD_APP_ID`) uses
+  another Discord application, for testing with a private app; the launch command it registers then
+  carries the same option.
+- **"Discord invites" setting** (Experimental, off by default, shown with the link). Discord only offers
+  Invite and Ask to Join while there's a party to advertise. With the setting on, the game hosts a
+  session quietly in the menu whenever Discord is connected and there's no session: no toast, no
+  clipboard copy, problems only logged, and no retry until the setting is turned
+  back on. Such a session closes again when Discord or the setting goes away, if nobody joined. Anyone
+  with its invite code can join while it is open, which the setting's description says.
+- **Pause on focus loss.** Pausing online pauses the whole band, so online play has its own setting,
+  "Pause On Focus Loss in Online Mode" (off by default). The normal setting is ignored while the link is
+  enabled.
+- **Leaving a song and losing the host** (`LinkController.HostLoss.cs`). The host's Back to Library asks
+  whether to leave with the party (`endsong`, every joiner goes back to the library) or alone. The host
+  drops out a friend who left the song or whose inputs stopped for 5 s and tells everyone (`dropped`);
+  a dropped friend returns to the library, even if they reconnect. A joiner whose host left the song,
+  ended the session or went silent sees a countdown and returns to the library (after 5 s for a lost
+  connection, 10 s for a host that left), instead of waiting in a pause that would never resume.
+- **Native library hardening.** A peer that stops reading is now disconnected once 32 MiB or 64k
+  reliable messages wait to go out to it, matching the limit on the incoming side. `read_frame` reads
+  the kind byte on its own, so a payload (up to 1 MiB) is no longer copied twice, and the log cap (4096
+  lines) is now checked and counted in one atomic step. The ABI stays at 3.
+- **Closing off the main thread.** `yl_destroy` can block for about 2.5 s while goodbyes go out.
+  `NativeLinkTransport.Dispose` now destroys the handle on its own thread, and the game waits up to 3 s
+  for those threads when it quits (`NativeLinkTransport.WaitForClosedHandles`), so goodbyes still go out.
+- **Plugins.** All three plugins are CI builds of `2c9936a43` (run 44234338625). The Windows and macOS
+  plugins had still been ABI 1 builds from before `yl_peer_id`, which the game refused to load.
+  `libyarg_audio.so` had been rebuilt by the Editor on a newer host (glibc floor 2.43); the CI-built copy
+  from `dev` is back.
+- **Not yet tested:** Discord invites between two machines and accounts, and the Discord-started launch
+  in a release build (the Editor skips registering the command).
 
 ## Future network features
 
@@ -712,7 +777,10 @@ the song, and the host's no fail setting is the one that counts.
     it's effectively no fail.
   - **On the host**, they're local to the host's main `EngineManager`, so they do count: they can fail
     the band and save it, although no friend can see their track.
-- **If the host drops mid-song, clients' meters stop updating** and the song can no longer fail for them.
+- **If the host drops mid-song, the song ends for the clients.** There's no host migration yet, and the
+  host runs the band meter and synced pause. A client whose host left the song or stopped sending gets a
+  countdown and returns to the library (see the phase 5 notes). A host that leaves can take the party
+  with it, or leave alone, which ends the song for the others the same way.
 - **The crowd and venue follow each game's own meter**, not the band's, on clients.
 
 ## Open questions
