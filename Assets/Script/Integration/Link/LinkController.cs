@@ -191,7 +191,12 @@ namespace YARG.Integration.Link
             var go = new GameObject(nameof(LinkController));
             DontDestroyOnLoad(go);
             Instance = go.AddComponent<LinkController>();
-            Application.quitting += () => Instance?.Close();
+            Application.quitting += () =>
+            {
+                Instance?.Close();
+                // Closing happens off the main thread; let the goodbyes go out before the process ends
+                NativeLinkTransport.WaitForClosedHandles(TimeSpan.FromSeconds(3));
+            };
         }
 
         private void Update()
