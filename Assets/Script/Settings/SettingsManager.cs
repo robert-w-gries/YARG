@@ -301,6 +301,7 @@ namespace YARG.Settings
                 nameof(Settings.BandComboTypeSetting),
                 nameof(Settings.DataStreamEnable),
                 nameof(Settings.LinkEnable),
+                new FieldMetadata(nameof(Settings.LinkDiscordInvites), visibleWhen: IsLinkEnabled),
                 nameof(Settings.SaveScoresWithBots),
                 new HeaderMetadata("Accessibility"),
                 nameof(Settings.FontScaling),
