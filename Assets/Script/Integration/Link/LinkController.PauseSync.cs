@@ -142,12 +142,12 @@ namespace YARG.Integration.Link
             _pause.SetLocalReady(ready);
             if (ready)
             {
-                gm.HidePauseMenu();
+                gm.HidePauseMenuWhileWaitingForBand();
                 YargLogger.LogInfo("Link pause: we're ready to resume");
             }
             else
             {
-                gm.ShowPauseMenu();
+                gm.ShowPauseMenuWhileWaitingForBand();
                 YargLogger.LogInfo("Link pause: we're not ready after all");
             }
 
@@ -210,7 +210,7 @@ namespace YARG.Integration.Link
                 {
                     _pausingFromLink = false;
                 }
-                gm.ShowPauseMenu();
+                gm.ShowPauseMenuWhileWaitingForBand();
                 return;
             }
 

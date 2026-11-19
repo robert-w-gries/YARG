@@ -146,6 +146,10 @@ mono_crash.mem.*.blob
 Tools/**/[Bb]in/
 Tools/**/[Oo]bj/
 
+# dotnet test build output of the online link unit tests in Tests/, as for the tools above
+/Tests/**/[Bb]in/
+/Tests/**/[Oo]bj/
+
 qodana.yaml
 
 # VLC upstream checkouts and downloaded SDKs (managed by vlc/build.sh)
@@ -157,7 +161,3 @@ qodana.yaml
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Online link unit tests (dotnet)
-/Tests/**/bin/
-/Tests/**/obj/

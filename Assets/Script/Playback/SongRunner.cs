@@ -431,7 +431,27 @@ namespace YARG.Playback
         /// Moves the gameplay timeline by a small amount without seeking. Audio follows through the normal
         /// sync correction, so keep each step small (well under a frame) and spread a larger change over time.
         /// </summary>
-        /// <remarks>Used to keep online friends' songs in step. Ignored while paused or not yet started.</remarks>
+        /// <remarks>
+        /// <para>
+        /// Online play uses this method. All games start the song at the same scheduled time. After the start,
+        /// the clock of each game drifts by some milliseconds. The start time is only as accurate as the
+        /// round-trip estimate. Also, each computer has a different frame rate and audio device.
+        /// </para>
+        /// <para>
+        /// The highways of friends play inputs with time stamps from the song clock of the friend. Thus drift
+        /// makes their notes hit early or late. Drift also makes a synced pause or resume occur at different
+        /// song times.
+        /// </para>
+        /// <para>
+        /// The joiner measures the difference to the song clock of the host. Each frame, it calls this method
+        /// with a step of a maximum of 2% of the frame time (<c>LinkController.CorrectClock</c>). It stops when
+        /// the difference is less than 3 ms. A seek (<see cref="SetSongTime"/>) corrects the difference
+        /// immediately. But a seek restarts the audio, and the player hears a jump. A small step changes only
+        /// the anchor of the input timeline. The audio synchronizer then corrects the audio, as it does for all
+        /// other drift.
+        /// </para>
+        /// <para>This method has no effect during a pause or before the start.</para>
+        /// </remarks>
         public void ShiftInputTime(double seconds)
         {
             if (!Started || Paused || seconds == 0 || double.IsNaN(seconds))

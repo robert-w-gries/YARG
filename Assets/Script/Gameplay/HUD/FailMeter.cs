@@ -76,7 +76,12 @@ namespace YARG.Gameplay.HUD
 
         private const float OFFSCREEN_Y = -400f;
 
-        /// <summary>Move the meter out of sight when this song plays with no meter.</summary>
+        /// <summary>
+        /// Move the meter out of view when this song has no meter. This method reads
+        /// <see cref="GameManager.NoFailMode"/>, not the setting, because online play ignores the setting.
+        /// <see cref="GameManager.NoFailMode"/> is correct only after the load. Thus the GameManager calls this
+        /// method when it initializes the meter. Awake is too early.
+        /// </summary>
         private void HideIfNoMeter(GameManager gameManager)
         {
             if (gameManager.NoFailMode == NoFailMode.NoMeter)
@@ -109,7 +114,7 @@ namespace YARG.Gameplay.HUD
             _engineManager = engineManager;
             HideIfNoMeter(gameManager);
             // In an online session that we aren't hosting, the host's meter decides who's shown and where
-            _players = gameManager.OnlineBandMeterMarkers() ?? LocalMarkers(engineManager, gameManager);
+            _players = gameManager.OnlineBandMeterMarkers() ?? BuildLocalMarkers(engineManager, gameManager);
 
             _playerSliders = new Slider[_players.Count];
             _needleSliders = new Slider[_players.Count];
@@ -178,6 +183,7 @@ namespace YARG.Gameplay.HUD
                 var handleImage = _playerSliders[i].handleRect.GetComponentInChildren<Image>();
                 var spriteName = _players[i].SpriteName;
 
+                // If the sprite name is null, the icon keeps its default image. LinkController logs the cause.
                 if (!string.IsNullOrEmpty(spriteName))
                 {
                     handleImage.sprite = Addressables.LoadAssetAsync<Sprite>(spriteName).WaitForCompletion();
@@ -190,6 +196,9 @@ namespace YARG.Gameplay.HUD
                 _needleSliders[i].gameObject.SetActive(true);
 
                 // Cached for reuse because starting a new tween generates garbage
+                // A null value means that the icon is hidden. Update() hides the icon on the first frame. Thus
+                // this value is only the start value of the tween. The value of an icon never fails the song.
+                // Only the meter of the band can fail the song.
                 float happiness = _players[i].Happiness() ?? 0f;
                 _playerHappinessTweeners[i] = _playerSliders[i].DOValue(happiness, 0.5f).SetAutoKill(false).SetLink(_playerSliders[i].gameObject);
                 _needleHappinessTweeners[i] = _needleSliders[i].DOValue(happiness, 0.5f).SetAutoKill(false).SetLink(_needleSliders[i].gameObject);
@@ -200,7 +209,7 @@ namespace YARG.Gameplay.HUD
         }
 
         /// <summary>This game's own meter: one icon per engine in <paramref name="engineManager"/>.</summary>
-        private static List<Marker> LocalMarkers(EngineManager engineManager, GameManager gameManager)
+        private static List<Marker> BuildLocalMarkers(EngineManager engineManager, GameManager gameManager)
         {
             var markers = new List<Marker>();
             var engines = engineManager.Engines;
@@ -246,7 +255,7 @@ namespace YARG.Gameplay.HUD
             bool anyPlayerInSp = false;
             for (var i = _players.Count - 1; i >= 0; i--)
             {
-                if (_currentHappiness[i] is not { } current)
+                if (_currentHappiness[i] is not { } playerHappiness)
                 {
                     HidePlayerMeter(i);
                     continue;
@@ -262,13 +271,13 @@ namespace YARG.Gameplay.HUD
                 // Check if we will overlap another icon
                 for (var j = i; j >= 0; j--)
                 {
-                    if (j == i || _currentHappiness[j] is not { } other)
+                    if (j == i || _currentHappiness[j] is not { } otherPlayerHappiness)
                     {
                         // Ignore self
                         continue;
                     }
 
-                    if (Math.Abs(current - other) < HAPPINESS_COLLISION_RANGE)
+                    if (Math.Abs(playerHappiness - otherPlayerHappiness) < HAPPINESS_COLLISION_RANGE)
                     {
                         overlap++;
                     }
@@ -283,10 +292,10 @@ namespace YARG.Gameplay.HUD
                 }
 
                 // This we can not do if the current player's happiness hasn't changed
-                if (_previousPlayerHappiness[i] != current)
+                if (_previousPlayerHappiness[i] != playerHappiness)
                 {
-                    _playerHappinessTweeners[i].ChangeValues(_playerSliders[i].value, current, 0.1f);
-                    _needleHappinessTweeners[i].ChangeValues(_needleSliders[i].value, current, 0.1f);
+                    _playerHappinessTweeners[i].ChangeValues(_playerSliders[i].value, playerHappiness, 0.1f);
+                    _needleHappinessTweeners[i].ChangeValues(_needleSliders[i].value, playerHappiness, 0.1f);
 
                     // Not sure if strictly necessary, but it seems like good practice to not try to play a playing tween
                     if (_playerHappinessTweeners[i].IsComplete())
@@ -308,7 +317,7 @@ namespace YARG.Gameplay.HUD
                     }
                 }
 
-                _previousPlayerHappiness[i] = current;
+                _previousPlayerHappiness[i] = playerHappiness;
             }
 
             UpdateMeterGlow(anyPlayerInSp);

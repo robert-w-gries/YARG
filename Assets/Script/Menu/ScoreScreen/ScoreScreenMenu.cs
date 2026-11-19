@@ -24,7 +24,6 @@ using YARG.Core.Replays.Analyzer;
 using YARG.Core.Song;
 using YARG.Localization;
 using YARG.Menu.MusicLibrary;
-using YARG.Integration.Link;
 using YARG.Menu.Navigation;
 using YARG.Menu.Persistent;
 using YARG.Scores;
@@ -668,10 +667,10 @@ namespace YARG.Menu.ScoreScreen
             {
                 buttons.Add(_viewReplayButtonEntry);
             }
-            else if (LinkController.Instance is not { ShouldHoldForStart: true })
+            else if (GlobalVariables.State.ScoreScreenStats is not { IsOnlinePlay: true })
             {
-                // Online, friends choose the next song together from the library: restarting would start it
-                // without the ones still here
+                // After online play, the friends select the next song together in the song library. Restart
+                // starts the song without the friends. Thus the menu does not show Restart.
                 buttons.Add(_restartButtonEntry);
             }
 

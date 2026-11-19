@@ -21,8 +21,12 @@ namespace YARG.Menu.Navigation
             _onClick.Invoke();
         }
 
-        /// <summary>Whether a click calls a method with one of these names (as set up in the Inspector).</summary>
-        public bool Calls(params string[] methodNames)
+        /// <summary>
+        /// True if a click on this button calls a method with one of these names. This method examines only
+        /// the methods that the Inspector connects to the click event. The pause menus use this method to find
+        /// buttons by their action (for example, "Restart"). The buttons have no other identifier.
+        /// </summary>
+        public bool CallsAnyMethod(params string[] methodNames)
         {
             for (int i = 0; i < _onClick.GetPersistentEventCount(); i++)
             {

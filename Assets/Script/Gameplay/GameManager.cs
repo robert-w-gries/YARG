@@ -8,10 +8,6 @@ using UnityEngine.InputSystem;
 using YARG.Core.Audio;
 using YARG.Core.Chart;
 using YARG.Core.Engine;
-using YARG.Core.Engine.Drums;
-using YARG.Core.Engine.Guitar;
-using YARG.Core.Engine.Keys;
-using YARG.Core.Engine.Vocals;
 using YARG.Core.Game;
 using YARG.Core.Input;
 using YARG.Core.Logging;
@@ -23,7 +19,6 @@ using YARG.Gameplay.Player;
 using YARG.Gameplay.Visuals;
 using YARG.Input;
 using YARG.Integration;
-using YARG.Integration.Link;
 using YARG.Localization;
 using YARG.Menu.Navigation;
 using YARG.Menu.Persistent;
@@ -110,59 +105,6 @@ namespace YARG.Gameplay
         public BackgroundManager BackgroundManager { get; private set; }
         public EngineManager EngineManager { get; private set; }
 
-        // Online link: one engine manager per friend, so their players never count toward this band's
-        // score, combo, star power, unisons or fail meter (except on the host, whose fail meter is the band's)
-        private readonly Dictionary<string, EngineManager> _remoteEngineManagers = new();
-
-        /// <summary>
-        /// The engine manager a player's engine belongs to: <see cref="EngineManager"/> for this game's own
-        /// players, and a separate one per friend for players mirrored over the online link. On the host of an
-        /// online session, friends' players join <see cref="EngineManager"/> too, so its fail meter covers
-        /// the whole band.
-        /// </summary>
-        public EngineManager EngineManagerFor(YargPlayer player)
-        {
-            var feed = player.RemoteFeed;
-            if (feed == null || feed.InHostBand) return EngineManager;
-
-            if (!_remoteEngineManagers.TryGetValue(feed.Member, out var manager))
-            {
-                manager = new EngineManager();
-                _remoteEngineManagers.Add(feed.Member, manager);
-            }
-            return manager;
-        }
-
-        /// <summary>
-        /// The band's fail meter: <see cref="EngineManager"/>'s, or in an online session that we aren't hosting,
-        /// the host's.
-        /// </summary>
-        public float BandHappiness => LinkController.Instance?.HostBandHappiness(this) ?? EngineManager.Happiness;
-
-        /// <summary>
-        /// The fail meter's player icons in an online session that we aren't hosting, which show the host's
-        /// values for every player in the band, or <c>null</c> to show this game's own engines.
-        /// </summary>
-        public List<FailMeter.Marker> OnlineBandMeterMarkers() =>
-            LinkController.Instance?.BandMeterMarkers(this);
-
-        /// <summary>
-        /// Online link: the host's band meter decides when this song fails, so our own meter can't.
-        /// </summary>
-        private bool BandMeterIsRemote => LinkController.Instance?.IsBandMeterRemote(this) ?? false;
-
-        /// <summary>
-        /// Online link: the host's band meter revived the band (a bandmate's star power saved a failed player).
-        /// </summary>
-        public void ReviveFromLink()
-        {
-            EngineManager.RevivePlayer();
-            foreach (var manager in _remoteEngineManagers.Values)
-            {
-                manager.RevivePlayer();
-            }
-        }
-
         public SongEntry Song  { get; private set; }
         public SongChart    Chart { get; private set; }
 
@@ -226,34 +168,10 @@ namespace YARG.Gameplay
 
         public int BandMultiplier => EngineManager.BandMultiplier;
 
-        // Online link: the whole band's score and stars, friends' players included, for the score box. Only
-        // used for display; this game's own players' score is still what gets saved. Null without friends'
-        // tracks in the song.
-        private EngineManager _onlineBand;
-
-        /// <summary>
-        /// The band score the score box shows: <see cref="BandScore"/>, or in an online session, the whole
-        /// band's, counting each friend's players as their own game reports them.
-        /// </summary>
-        public int ScoreBoxScore => _onlineBand?.Score ?? BandScore;
-
-        /// <summary>
-        /// The band stars the score box shows: <see cref="BandStars"/>, or in an online session, the whole
-        /// band's, from the star cutoffs of every player in it.
-        /// </summary>
-        public float ScoreBoxStars => _onlineBand?.Stars ?? BandStars;
-
         public double FirstNoteTime { get; private set; }
         public double LastNoteTime  { get; private set; }
 
         public ReplayInfo ReplayInfo { get; private set; }
-
-        /// <summary>
-        /// Online play: friends are in the session, so this song holds for a synced start with them. Set once
-        /// when gameplay loads. The pause and fail menus hide what would leave friends behind (restart,
-        /// practice, skip, no fail), and the no fail setting is ignored (see <see cref="NoFailMode"/>).
-        /// </summary>
-        public bool IsOnlinePlay { get; private set; }
 
         /// <summary>
         /// The no fail mode this song plays with: the setting, except in online play, where the band's meter
@@ -304,8 +222,6 @@ namespace YARG.Gameplay
         private List<int[]> LocalStarScoreThresholds() =>
             _players.Where(p => !p.IsRemote).Select(p => p.BaseEngine.StarScoreThresholds).ToList();
 
-        private int _highwayCount;
-
         private        bool HasBots            => ActiveLocalPlayers.Any(player => player.IsBot);
         private static bool SaveScoresWithBots => SettingsManager.Settings.SaveScoresWithBots.Value;
 
@@ -321,7 +237,6 @@ namespace YARG.Gameplay
             Song = GlobalVariables.State.CurrentSong;
             ReplayInfo = GlobalVariables.State.CurrentReplay;
             IsPractice = GlobalVariables.State.IsPractice && ReplayInfo == null;
-            IsOnlinePlay = LinkController.Instance is { ShouldHoldForStart: true } && !IsPractice && ReplayInfo == null;
             _bandComboType = SettingsManager.Settings.BandComboTypeSetting.Value;
 
             Navigator.Instance.PopAllSchemes();
@@ -352,8 +267,8 @@ namespace YARG.Gameplay
         {
             YargLogger.LogInfo("Exiting song");
 
-            // Online link: friends learn we've left this play of the song (no-op outside a synced song)
-            LinkController.Instance?.OnSongExited(this);
+            // Online play: tell the friends that this game left this play of the song
+            Link?.OnSongExited(this);
 
             // Unsubscribe from other events
             SettingsManager.Settings.NoFail.OnChange -= OnNoFailModeChanged;
@@ -430,16 +345,16 @@ namespace YARG.Gameplay
 
             // Update players
             int totalScore = 0;
-            int onlineScore = 0;
             foreach (var player in _players)
             {
                 player.GameplayUpdate();
+
+                // The band score of this game does not include friends' players. Refer to GameManager.Online.cs.
                 if (player.IsRemote)
                 {
-                    var feed = player.Player.RemoteFeed;
-                    onlineScore += feed.Score + feed.BandBonus;
                     continue;
                 }
+
                 totalScore += player.Score;
                 totalScore += player.BandBonusScore;
             }
@@ -452,10 +367,9 @@ namespace YARG.Gameplay
             BandScore = totalScore;
             EngineManager.UpdateStars();
 
-            if (_onlineBand != null)
+            if (IsOnlinePlay)
             {
-                _onlineBand.Score = totalScore + onlineScore;
-                _onlineBand.UpdateStars();
+                UpdateOnlineBandScore(totalScore);
             }
 
             // End song if needed (required for the [end] event)
@@ -547,10 +461,11 @@ namespace YARG.Gameplay
             _songRunner.Pause();
             PauseCore(showMenu);
 
-            // Online: everyone in a synced song pauses together (a failed song's menu is synced as a fail)
+            // Online play: the band pauses together. The menu of a failed song is not a pause. The link sends
+            // a fail for it.
             if (showMenu && !PlayerHasFailed)
             {
-                LinkController.Instance?.OnLocalPause(this);
+                Link?.OnLocalPause(this);
             }
         }
 
@@ -619,31 +534,13 @@ namespace YARG.Gameplay
             }
         }
 
-        /// <summary>
-        /// Online: open the pause menu while staying paused, when a player who was waiting for friends to
-        /// resume changes their mind, or a friend pauses again.
-        /// </summary>
-        public void ShowPauseMenu()
-        {
-            if (!Paused || _pauseMenu.IsOpen) return;
-            PushPauseMenu();
-        }
-
-        /// <summary>
-        /// Online: close the pause menu but stay paused, while a player who pressed resume waits for friends.
-        /// </summary>
-        public void HidePauseMenu()
-        {
-            _pauseMenu.PopAllMenus();
-            CloseAllPlayerMenus();
-        }
-
         public bool PlayerHasFailed { get; set; } = false;
 
         public async void Resume(double? rewindDuration = null)
         {
-            // Online: in a synced pause, resuming means "ready", and the host resumes everyone together
-            if (LinkController.Instance?.HoldResume(this) == true)
+            // Online play: in a synced pause, Resume means "ready". The host resumes all games of the band at
+            // the same time.
+            if (Link?.HoldResume(this) == true)
             {
                 return;
             }
@@ -793,15 +690,6 @@ namespace YARG.Gameplay
         public double GetInputTime(double inputSystemTime)
             => _songRunner.GetInputTime(inputSystemTime);
 
-        /// <summary>
-        /// Input time right now, rather than at the start of this frame like <see cref="InputTime"/>.
-        /// While paused it's the paused time.
-        /// </summary>
-        public double CurrentInputTime => Paused ? InputTime : GetInputTime(InputManager.CurrentInputTime);
-
-        /// <inheritdoc cref="SongRunner.ShiftInputTime"/>
-        public void ShiftInputTime(double seconds) => _songRunner.ShiftInputTime(seconds);
-
         /// <inheritdoc cref="SongRunner.GetAudioPlaybackTime"/>
         public double GetAudioPlaybackTime(double songTime)
             => _songRunner.GetAudioPlaybackTime(songTime);
@@ -851,11 +739,12 @@ namespace YARG.Gameplay
                     Stats = ScoreCardStats(player),
                     IsReplay = player.Player.IsReplay
                 }).ToArray(),
-                // In an online session, the whole band's, as the score box showed it. Only for display:
-                // RecordScores saves this game's own players' score.
+                // In online play, this is the score of all players in the band, as the score box shows it. It is
+                // only for display. RecordScores saves only the scores of the players of this game.
                 BandScore = ScoreBoxScore,
                 BandStars = (int) ScoreBoxStars,
                 NoFail = NoFailMode != NoFailMode.Off,
+                IsOnlinePlay = IsOnlinePlay,
 
                 MeanAverageOffset = ActiveLocalPlayers
                     .Where(player => !player.IsBot)
@@ -1118,8 +1007,9 @@ namespace YARG.Gameplay
 
         private void OnApplicationFocus(bool hasFocus)
         {
-            // Online, a pause stops the whole band, so it has its own setting (off by default)
-            var pauseOnFocusLoss = LinkController.IsEnabled
+            // In online play, a pause stops all players in the band. Thus online play has a different setting.
+            // That setting is off by default.
+            var pauseOnFocusLoss = IsOnlinePlay
                 ? SettingsManager.Settings.PauseOnFocusLossOnline.Value
                 : SettingsManager.Settings.PauseOnFocusLoss.Value;
 
@@ -1157,20 +1047,6 @@ namespace YARG.Gameplay
             FailSong(fromLink: false);
         }
 
-        /// <summary>
-        /// Fail the song because a friend's game failed it over the online link. The band fails together,
-        /// whatever our own meter or no fail setting says, or we'd keep playing next to their frozen track.
-        /// </summary>
-        public void FailFromLink()
-        {
-            if (IsPractice)
-            {
-                return;
-            }
-
-            FailSong(fromLink: true);
-        }
-
         private async void FailSong(bool fromLink)
         {
             if (!PlayerHasFailed)
@@ -1179,7 +1055,7 @@ namespace YARG.Gameplay
 
                 if (!fromLink)
                 {
-                    LinkController.Instance?.ReportSongFailed(this);
+                    Link?.ReportSongFailed(this);
                 }
 
                 if (_players.Count > 1)
@@ -1219,14 +1095,14 @@ namespace YARG.Gameplay
             }
 
             // If we're going from no fail to fail and happiness would result in a player being in the red, reset happiness
-            if (mode == NoFailMode.Off && EngineManager.GetLowestHappiness()?.Happiness <= 0.333f && !BandMeterIsRemote)
+            if (mode == NoFailMode.Off && EngineManager.GetLowestHappiness()?.Happiness <= 0.333f)
             {
                 EngineManager.InitializeHappiness(false);
             }
 
             InvalidateScores("Menu.Toast.NoFailScore");
 
-            EngineManager.NoFailChanged(mode != NoFailMode.Off || BandMeterIsRemote);
+            EngineManager.NoFailChanged(mode != NoFailMode.Off);
             _failMeter.SetActive(mode != NoFailMode.NoMeter);
         }
 
@@ -1336,52 +1212,6 @@ namespace YARG.Gameplay
             _breBox.EndCoda(EngineManager.TotalCodaBonus, songEnding, null);
         }
 
-        /// <summary>
-        /// The stats a player's score card shows. For a friend's player, their mirror's stats with the score,
-        /// band bonus and stars their own game reported, so every game shows the same numbers for them (on the
-        /// host, the mirror's band bonus also counts the host's star power).
-        /// </summary>
-        private static BaseStats ScoreCardStats(BasePlayer player)
-        {
-            var stats = player.BaseStats;
-            var feed = player.Player.RemoteFeed;
-            if (feed is not { HasData: true }) return stats;
-
-            BaseStats copy = stats switch
-            {
-                GuitarStats guitar => new GuitarStats(guitar),
-                DrumsStats drums   => new DrumsStats(drums),
-                KeysStats keys     => new KeysStats(keys),
-                VocalsStats vocals => new VocalsStats(vocals),
-                _                  => null,
-            };
-            if (copy == null) return stats;
-
-            // TotalScore is derived; move the difference into committed score so it adds up to theirs
-            copy.CommittedScore += feed.Score - copy.TotalScore;
-            copy.BandBonusScore = feed.BandBonus;
-            copy.Stars = feed.Stars;
-            return copy;
-        }
-
-        /// <summary>
-        /// Online link: works out the whole band's star cutoffs for the score box, from every player with a
-        /// track (friends' players without one, like vocals, count toward neither the score nor the cutoffs).
-        /// </summary>
-        private void UpdateOnlineBandCutoffs()
-        {
-            if (!_players.Any(p => p.IsRemote))
-            {
-                _onlineBand = null;
-                return;
-            }
-
-            _onlineBand ??= new EngineManager();
-            _onlineBand.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(
-                _players.Select(p => p.BaseEngine.StarScoreThresholds).ToList());
-            _onlineBand.ResetStars();
-        }
-
         public void ResetCoda()
         {
             _breBox.ForceReset();
@@ -1391,7 +1221,10 @@ namespace YARG.Gameplay
         {
             EngineManager.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(LocalStarScoreThresholds());
             EngineManager.ResetStars();
-            UpdateOnlineBandCutoffs();
+            if (IsOnlinePlay)
+            {
+                UpdateOnlineBandCutoffs();
+            }
             if (_unisonDisplay.enabled)
             {
                 _unisonDisplay.OnDifficultyChanged(player.EngineContainer.EngineId);

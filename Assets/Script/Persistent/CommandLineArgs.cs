@@ -35,6 +35,9 @@ namespace YARG
 
         private const string PERSISTENT_DATA_PATH_ARG = "-persistent-data-path";
 
+        // The link and Discord options below are for development. Only Editor and test builds
+        // (YARG_TEST_BUILD) read them.
+
         /// <summary>
         /// Online link (development): join the session hosted at this ticket instead of hosting one.
         /// </summary>
@@ -110,6 +113,8 @@ namespace YARG
                         }
 
                         break;
+#if UNITY_EDITOR || YARG_TEST_BUILD
+                    // Development options. Release builds do not read them.
                     case LINK_JOIN_ARG:
                         i++;
                         if (i < args.Length)
@@ -137,6 +142,7 @@ namespace YARG
                         }
 
                         break;
+#endif
                 }
             }
         }
