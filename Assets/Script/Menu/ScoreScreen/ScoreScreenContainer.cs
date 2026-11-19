@@ -26,6 +26,9 @@ namespace YARG.Menu.ScoreScreen
         /// <summary>The song was played with no fail on (online play ignores the setting).</summary>
         public bool NoFail;
 
+        /// <summary>True if the song was online play (<see cref="Gameplay.GameManager.IsOnlinePlay"/>).</summary>
+        public bool IsOnlinePlay;
+
 #nullable enable
         public ReplayInfo? ReplayInfo;
         public bool? ReplayWasConsistent;

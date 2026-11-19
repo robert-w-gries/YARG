@@ -104,7 +104,7 @@ namespace YARG.Integration.Link
                 clock = new ClockOffsetEstimator();
                 _clocks[member.Id] = clock;
             }
-            clock.AddSample(Now, gm.CurrentInputTime, remoteTime, rtt.TotalSeconds / 2, gm.SongSpeed);
+            clock.AddSample(Now, gm.InputTimeAtCall, remoteTime, rtt.TotalSeconds / 2, gm.SongSpeed);
         }
 
         /// <summary>Call every frame.</summary>

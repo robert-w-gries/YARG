@@ -534,6 +534,8 @@ namespace YARG.Gameplay.HUD
                 _activeUnisonObject.AddParticipant(participantId, phrase.NoteCount);
                 if (!_unisonState.TryGetValue(participantId, out var unisonState))
                 {
+                    // Skip only this participant. Do not use "return" here, because it stops the reset of all
+                    // participants after this one.
                     continue;
                 }
 

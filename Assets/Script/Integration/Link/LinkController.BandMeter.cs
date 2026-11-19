@@ -308,11 +308,21 @@ namespace YARG.Integration.Link
                     if (feed.Mirrored) continue;
 
                     var key = (feed.Member, feed.Index);
+                    string spriteName = null;
+                    if (Enum.TryParse(feed.Instrument, out Instrument instrument))
+                    {
+                        spriteName = InstrumentIconProvider.GetInstrumentSprite(instrument);
+                    }
+                    else
+                    {
+                        // The game of the friend is newer or modified. The icon keeps the default image of the meter.
+                        YargLogger.LogWarning($"Link: unknown instrument \"{feed.Instrument}\" for {feed.Name}, " +
+                            "using the default fail meter icon");
+                    }
+
                     markers.Add(new FailMeter.Marker
                     {
-                        SpriteName = Enum.TryParse(feed.Instrument, out Instrument instrument)
-                            ? InstrumentIconProvider.GetInstrumentSprite(instrument)
-                            : null,
+                        SpriteName = spriteName,
                         Happiness = () => HostPlayerHappiness(band, key, default),
                         IsStarPowerActive = () => false,
                     });

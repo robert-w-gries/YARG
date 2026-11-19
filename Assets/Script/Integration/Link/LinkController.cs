@@ -43,11 +43,17 @@ namespace YARG.Integration.Link
     /// </para>
     /// <para>
     /// Sessions are hosted and joined from the lobby (<see cref="LinkLobby"/>, "Online" in the main menu). The
-    /// host's invite code is copied to the clipboard; friends paste it to join. For development, launch options
-    /// (or environment variables, handy in the Editor) can do the same at startup: <c>-link-host</c>
-    /// (<c>YARG_LINK_HOST=1</c>) or <c>-link-join &lt;ticket&gt;</c> (<c>YARG_LINK_JOIN</c>).
-    /// <c>-link-name</c> (<c>YARG_LINK_NAME</c>) sets the name friends see; by default it's the first
-    /// player's profile name.
+    /// host's invite code is copied to the clipboard; friends paste it to join.
+    /// </para>
+    /// <para>
+    /// For development, launch options can host or join at startup. Environment variables do the same, and
+    /// are easier to use in the Editor. Only Editor builds and test builds read these options:
+    /// <list type="bullet">
+    /// <item><c>-link-host</c> (<c>YARG_LINK_HOST=1</c>) hosts a session.</item>
+    /// <item><c>-link-join &lt;ticket&gt;</c> (<c>YARG_LINK_JOIN</c>) joins a session.</item>
+    /// <item><c>-link-name</c> (<c>YARG_LINK_NAME</c>) sets the name that friends see. The default is the
+    /// profile name of the first player.</item>
+    /// </list>
     /// </para>
     /// <para>
     /// The host's fail meter is the band's: see <see cref="UpdateBandMeter"/>.
@@ -334,6 +340,7 @@ namespace YARG.Integration.Link
         /// </summary>
         private void OpenFromLaunchOptions()
         {
+#if UNITY_EDITOR || YARG_TEST_BUILD
             string join = CommandLineArgs.LinkJoin ?? Environment.GetEnvironmentVariable("YARG_LINK_JOIN");
             bool host = CommandLineArgs.LinkHost || Environment.GetEnvironmentVariable("YARG_LINK_HOST") == "1";
 
@@ -345,6 +352,7 @@ namespace YARG.Integration.Link
             {
                 Host();
             }
+#endif
         }
 
         private bool Open(LinkRole role, string join)
@@ -357,8 +365,12 @@ namespace YARG.Integration.Link
                 return false;
             }
 
+#if UNITY_EDITOR || YARG_TEST_BUILD
             string name = CommandLineArgs.LinkName ?? Environment.GetEnvironmentVariable("YARG_LINK_NAME") ??
                 DefaultName();
+#else
+            string name = DefaultName();
+#endif
             var options = new LinkSessionOptions
             {
                 GameVersion = GlobalVariables.Instance.CurrentVersion,
@@ -890,7 +902,15 @@ namespace YARG.Integration.Link
             var taken = new List<string>();
             foreach (var (member, setup) in _remoteSetups)
             {
-                if (setup.SongHash != hash) continue;
+                // WaitForStartSignal removed the setups for other songs. If a setup for a different song arrived
+                // after that, the friend gets no highway in this song.
+                if (setup.SongHash != hash)
+                {
+                    YargLogger.LogFormatInfo("Link: {0} sent a setup for a different song, so they have no " +
+                        "highway in this one", setup.Feeds.Count > 0 ? setup.Feeds[0].Name : member);
+                    continue;
+                }
+
                 taken.Add(member);
                 _songSetups[member] = setup;
 
@@ -1393,7 +1413,7 @@ namespace YARG.Integration.Link
                     // Every input up to this time has been recorded (before each player's calibration)
                     ["time"]    = gm.InputTime,
                     // Our input time right now, for friends to measure how far apart our clocks are
-                    ["clock"]   = gm.CurrentInputTime,
+                    ["clock"]   = gm.InputTimeAtCall,
                     ["players"] = players,
                 };
             }

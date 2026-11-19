@@ -48,10 +48,14 @@ Both are tradeoffs against polish, and the MVP write-up should say so.
   viewer, stem muting or rewinds for friends' tracks), the hidden online pause options, the band score
   box, a small `MenuManager.CurrentMenu` getter and the settings, launch options and text for the link.
   The ones reviewers will look at most closely:
-  - **Each player has its own clock.** `BasePlayer.TimeLag` and `PlayerVisualTime` let a friend's track run
-    behind the song. Track elements now read the player's time instead of `GameManager.VisualTime`. For local
-    players the lag is always 0, so nothing changes for them, but "every track shares one clock" no longer
-    holds in the code.
+  - **One place for online gameplay code.** `GameManager.Online.cs` has all the online members of
+    `GameManager`. `GameManager.IsOnlinePlay` is the one check: it is true only when the session scheduled a
+    synced start for the song. The other GameManager code calls the link through `GameManager.Link`, which is
+    `null` when the song is not online play.
+  - **A friend's engine runs behind the song.** `BasePlayer.EngineLag` is how far a friend's engine is
+    behind, because their inputs arrive a network delay late. Their highway is drawn at the song's
+    `GameManager.VisualTime`, like every other highway, and `LateHitAllowance` keeps passed notes so their
+    late hits still find them.
   - **Engine managers for friends.** `GameManager.EngineManagerFor` gives each friend their own
     `EngineManager`. Every player registers through it. The host-authoritative fail meter will route friends'
     engines into the host's main manager instead.
@@ -743,9 +747,10 @@ the song, and the host's no fail setting is the one that counts.
   and band bonus that each player's own game reports. The fix needs YARG.Core (see
   [YARG.Core follow-up work](#yargcore-follow-up-work), item 1).
 - **Online play hides the menu options that would leave friends behind.** When friends are in the session,
-  gameplay sets `GameManager.IsOnlinePlay`, and the pause, fail and quick settings menus hide Restart,
-  Practice, Skip and the no fail options (`GenericPause.HideOnlineOptions`, matched by the method each
-  button calls). The score screen hides Restart too. The no fail setting is ignored in online play
+  gameplay sets `GameManager.IsOnlinePlay` when the synced start is scheduled, and the pause, fail and quick
+  settings menus hide Restart, Practice, Skip and the no fail options (`GenericPause.BuildOnlineOptions`,
+  matched by the method each button calls). The score screen hides Restart too
+  (`ScoreScreenStats.IsOnlinePlay`). The no fail setting is ignored in online play
   (`GameManager.NoFailMode` is always `Off`), because the band's meter is shared. Back to Library stays.
 - **Pause is synced, but the pause menu's other options aren't.** Anyone pausing pauses everyone
   (`LinkController.PauseSync`, `PauseCoordinator`). Resume marks a player ready; once everyone is, the
@@ -817,7 +822,12 @@ maintainers' go-ahead. Each one names the workaround in YARG that it would repla
    data. A friend's `setup` message is untrusted, so `ReplayBlobCheck` checks every length before
    the reader runs. It accepts only one replay version and one profile version, and must be updated
    with each format change. If the reader checked bounds itself, the check could be removed.
-5. **Copy any stats object.** The copy constructors exist only on each stats type, so
+5. **A fail meter that cannot fail.** In online play, a client's main `EngineManager` and each friend's
+   own manager must never fail the song. `GameManager.InitializeOnlineHappiness` gets this with the
+   `noFail` flag of `EngineManager.InitializeHappiness`, which also means "the player selected no fail".
+   An explicit mode (for example, a meter that only shows values that another game decides) would state
+   the online rule in Core, and `OnNoFailModeChanged` could not change it by accident.
+6. **Copy any stats object.** The copy constructors exist only on each stats type, so
    `GameManager.ScoreCardStats` copies a friend's stats with a type switch before it puts in their
    reported score. A public virtual `BaseStats.Clone()` would replace the switch and pick up new
    game modes on its own. This is small and optional.

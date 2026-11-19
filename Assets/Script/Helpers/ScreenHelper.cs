@@ -30,11 +30,11 @@ namespace YARG.Helpers
 
                     // Automatically update resolution if set to default and we're in fullscreen. Check the
                     // actual window too, so a window opened by the command line isn't made fullscreen.
-                    if (SettingsManager.Settings.Resolution.Value == null &&
-                        SettingsManager.Settings.FullscreenMode.Value is FullScreenMode.FullScreenWindow
-                            or FullScreenMode.ExclusiveFullScreen &&
-                        Screen.fullScreenMode is FullScreenMode.FullScreenWindow or FullScreenMode.ExclusiveFullScreen
-                    )
+                    bool resolutionIsDefault = SettingsManager.Settings.Resolution.Value == null;
+                    bool settingIsFullscreen = IsFullscreen(SettingsManager.Settings.FullscreenMode.Value);
+                    bool windowIsFullscreen = IsFullscreen(Screen.fullScreenMode);
+
+                    if (resolutionIsDefault && settingIsFullscreen && windowIsFullscreen)
                     {
                         SetResolution(screenResolution);
                     }
@@ -47,6 +47,9 @@ namespace YARG.Helpers
                 }
             };
         }
+
+        private static bool IsFullscreen(FullScreenMode mode) =>
+            mode is FullScreenMode.FullScreenWindow or FullScreenMode.ExclusiveFullScreen;
 
         private static bool IsResolutionChanged(Resolution a, Resolution b)
         {

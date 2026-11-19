@@ -28,6 +28,8 @@ namespace YARG.Integration
 
     public class DiscordController : MonoSingleton<DiscordController>
     {
+        // The ID of the YARG Discord application. Rich Presence and invites use it, unless ApplicationId gives
+        // a different ID.
         private const long APPLICATION_ID = 1091177744416637028;
 
         /// <summary>
@@ -143,11 +145,9 @@ namespace YARG.Integration
                 return;
             }
 
-            if (_toldNotConnected)
-            {
-                _toldNotConnected = false;
-                YargLogger.LogInfo("Discord: connected");
-            }
+            // If the connection stops later, log the failure again
+            _toldNotConnected = false;
+            YargLogger.LogInfo("Discord: connected");
 
             if (appId != APPLICATION_ID)
             {
@@ -310,7 +310,7 @@ namespace YARG.Integration
         {
             // Discord may have been started after the game, and invites only work once we've reached it
             bool online = IsOnline();
-            if (online && !_wasOnline)
+            if (online && !_wasOnline && _discord is null)
             {
                 CreateInstance();
             }
@@ -339,9 +339,8 @@ namespace YARG.Integration
 
         private void OnApplicationFocus(bool hasFocus)
         {
-            // Coming back to the game is the usual moment after opening Discord. Does nothing if we're
-            // already connected.
-            if (hasFocus)
+            // Players usually come back to the game after they open Discord. Thus try to connect again then.
+            if (hasFocus && _discord is null)
             {
                 CreateInstance();
             }
@@ -621,13 +620,20 @@ namespace YARG.Integration
         {
             get
             {
+#if UNITY_EDITOR || YARG_TEST_BUILD
+                // Only development builds and test builds read these overrides
                 if (CommandLineArgs.DiscordAppId is { } fromArgs)
                 {
                     return fromArgs;
                 }
 
-                return long.TryParse(Environment.GetEnvironmentVariable(APP_ID_VARIABLE), out long fromEnv) &&
-                    fromEnv > 0 ? fromEnv : APPLICATION_ID;
+                if (long.TryParse(Environment.GetEnvironmentVariable(APP_ID_VARIABLE), out long fromEnv) &&
+                    fromEnv > 0)
+                {
+                    return fromEnv;
+                }
+#endif
+                return APPLICATION_ID;
             }
         }
 

@@ -112,7 +112,7 @@ Each player of a friend becomes a local `TrackPlayer`. It plays the received inp
 Examine these items:
 
 - **Engine time:** `BasePlayer.RemoteGameplayUpdate` moves the engine only to the time of the last received input. `EngineLag` is the delay.
-- **Visual time:** Track elements use `Player.PlayerVisualTime`, not `GameManager.VisualTime`. At this time, the two values are equal for all players.
+- **Visual time:** A friend's highway is drawn at `GameManager.VisualTime`, as every other highway is. Only the engine of a friend's player runs late (`EngineLag`).
 - **Late hits:** `LateHitAllowance` keeps passed notes on a friend's track for a maximum of 1 s.
 - **`IsRemote` checks:** A friend's track does not play sounds, mute stems, show the input viewer or rewind.
 - **Order:** The game adds friends' tracks after the local tracks. It does not add vocals.
@@ -120,6 +120,8 @@ Examine these items:
 ### 8. Scores and band fail meter
 
 The players of a friend do not add to the local score. The fail meter of the host is the band meter.
+
+All the online code of `GameManager` is in `GameManager.Online.cs`. The remarks on that class have a table of the authority for each value: each game for its own players' scores, and the host for the band meter. `GameManager.IsOnlinePlay` is the one check for online play. It is true only when the session scheduled a synced start for the song.
 
 Examine these items:
 
@@ -149,8 +151,8 @@ Examine these items:
 
 - **Prefab:** `MainMenu.prefab` has 247 new lines for one `MenuEntry`.
 - **Text:** The messages in `LinkController` are English text in the code. Only `en-US.json` has the new keys. Must the messages be localized before the merge?
-- **Launch options:** Must the development options (`-link-host`, `-link-join`, `-link-name`, `-discord-app-id` and the `YARG_LINK_*` and `YARG_DISCORD_APP_ID` variables) be in release builds?
-- **Pause on focus loss:** A pause online stops all players. Thus online play has a separate setting, "Pause On Focus Loss in Online Mode" (`PauseOnFocusLossOnline`, off by default). When `LinkEnable` is on, the game ignores the usual setting.
+- **Launch options:** Only Editor and test builds (`YARG_TEST_BUILD`) read the development options (`-link-host`, `-link-join`, `-link-name`, `-discord-app-id` and the `YARG_LINK_*` and `YARG_DISCORD_APP_ID` variables). Release builds ignore them.
+- **Pause on focus loss:** A pause online stops all players. Thus online play has a separate setting, "Pause On Focus Loss in Online Mode" (`PauseOnFocusLossOnline`, off by default). In online play (`GameManager.IsOnlinePlay`), the game uses this setting, not the usual setting.
 
 ### 11. Window launch arguments
 
@@ -207,9 +209,8 @@ If the maintainers merge the branch, these tasks continue after the merge. Each 
 ### When gameplay code changes
 
 - **Friends' tracks:** A friend's track is a local `TrackPlayer` with `IsRemote` set. If a new player feature plays sounds, mutes stems, shows input or rewinds, add an `IsRemote` check.
-- **Visual time:** Track elements must use `Player.PlayerVisualTime`, not `GameManager.VisualTime`.
 - **Song exit:** `GameManager.OnDestroy` calls `LinkController.OnSongExited`. This call tells friends that the player left the song. Each exit from gameplay must destroy the `GameManager`.
-- **Pause and fail menus:** Pause is synchronized. In online play, `GenericPause.HideOnlineOptions` hides the items that leave friends behind (Restart, Practice, Skip and no fail). It finds each item by the name of the method that the button calls. If you rename one of these methods, update the list. If you add a menu item, decide if it must show in online play.
+- **Pause and fail menus:** Pause is synchronized. In online play, `GenericPause.BuildOnlineOptions` hides the items that leave friends behind (Restart, Practice, Skip and no fail). It finds each item by the name of the method that the button calls. If you rename one of these methods, update the list. If you add a menu item, decide if it must show in online play.
 - **No fail:** Online play ignores the no fail setting. Read `GameManager.NoFailMode`, not the setting, in gameplay code.
 
 ### When online messages change

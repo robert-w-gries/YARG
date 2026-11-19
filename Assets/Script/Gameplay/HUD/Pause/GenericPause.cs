@@ -1,7 +1,6 @@
 using System;
 using YARG.Core.Input;
 using YARG.Core.Logging;
-using YARG.Integration.Link;
 using YARG.Menu.Navigation;
 using YARG.Menu.Persistent;
 using YARG.Replays;
@@ -30,17 +29,17 @@ namespace YARG.Gameplay.HUD
             nameof(QuickSettings.ToggleNoFail), nameof(SetlistPause.Skip),
         };
 
-        /// <summary>In online play, hide the options in <see cref="OnlineHiddenOptions"/>.</summary>
-        protected void HideOnlineOptions()
-        {
-            if (GameManager == null || !GameManager.IsOnlinePlay)
-            {
-                return;
-            }
+        protected bool IsOnlinePlay => GameManager != null && GameManager.IsOnlinePlay;
 
+        /// <summary>
+        /// Set up this menu for online play. This method hides the items in <see cref="OnlineHiddenOptions"/>.
+        /// <see cref="OnEnable"/> calls it only in online play.
+        /// </summary>
+        protected virtual void BuildOnlineOptions()
+        {
             foreach (var button in GetComponentsInChildren<NavigatableButton>(true))
             {
-                if (!button.Calls(OnlineHiddenOptions)) continue;
+                if (!button.CallsAnyMethod(OnlineHiddenOptions)) continue;
 
                 button.gameObject.SetActive(false);
                 button.NavigationGroup?.RemoveNavigatable(button);
@@ -49,7 +48,10 @@ namespace YARG.Gameplay.HUD
 
         protected virtual void OnEnable()
         {
-            HideOnlineOptions();
+            if (IsOnlinePlay)
+            {
+                BuildOnlineOptions();
+            }
 
             if (Navigator.Instance == null)
             {
@@ -125,8 +127,9 @@ namespace YARG.Gameplay.HUD
 
         public void BackToLibrary()
         {
-            // Online: a host with friends still in the song chooses whether to take them along
-            if (LinkController.Instance != null && LinkController.Instance.OfferLeaveWithParty(GameManager))
+            // Online play: if this game is the host and friends still play, the host selects if the friends
+            // also leave
+            if (IsOnlinePlay && GameManager.OfferLeaveWithParty())
             {
                 return;
             }
