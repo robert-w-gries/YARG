@@ -443,12 +443,13 @@ namespace YARG.Playback
         /// song times.
         /// </para>
         /// <para>
-        /// The joiner measures the difference to the song clock of the host. Each frame, it calls this method
-        /// with a step of a maximum of 2% of the frame time (<c>LinkController.CorrectClock</c>). It stops when
-        /// the difference is less than 3 ms. A seek (<see cref="SetSongTime"/>) corrects the difference
+        /// The joiner measures the difference to the song clock of the host. When the difference is 10 ms or
+        /// more, it starts to call this method each frame with a step of a maximum of 2% of the frame time
+        /// (<c>LinkController.CorrectClock</c>). It stops when the difference is less than 3 ms. A seek (<see cref="SetSongTime"/>) corrects the difference
         /// immediately. But a seek restarts the audio, and the player hears a jump. A small step changes only
         /// the anchor of the input timeline. The audio synchronizer then corrects the audio, as it does for all
-        /// other drift.
+        /// other drift. Only when the difference is 0.5 s or more does the joiner seek once instead
+        /// (<c>GameManager.JumpInputTime</c>), because small steps would take too long.
         /// </para>
         /// <para>This method has no effect during a pause or before the start.</para>
         /// </remarks>

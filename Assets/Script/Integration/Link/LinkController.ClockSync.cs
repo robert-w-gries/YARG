@@ -28,6 +28,12 @@ namespace YARG.Integration.Link
     /// slow (<see cref="SLEW_RATE"/>), which the audio sync follows without a seek. With every joiner in step
     /// with the host, they're in step with each other too.
     /// </para>
+    /// <para>
+    /// Easing a large difference would take most of a song, so from <see cref="JUMP_THRESHOLD"/> a joiner
+    /// seeks into step once instead (<see cref="GameManager.JumpInputTime"/>). The player hears a jump, and
+    /// a jump forward misses the notes it skips. That's better than friends' tracks being off for the rest of
+    /// the song.
+    /// </para>
     /// </remarks>
     public partial class LinkController
     {
@@ -44,10 +50,16 @@ namespace YARG.Integration.Link
         private const double SLEW_RATE = 0.02;
 
         /// <summary>
-        /// Beyond this, something other than the start is to blame (a pause, say), and easing would take
-        /// too long to be useful; just report it.
+        /// From this far apart, in seconds, seek into step instead of easing (25 s at <see cref="SLEW_RATE"/>).
         /// </summary>
-        private const double MAX_CORRECTABLE_OFFSET = 2.0;
+        private const double JUMP_THRESHOLD = 0.5;
+
+        /// <summary>
+        /// The least time between two jumps, in seconds. A jump starts the estimate over, so the next one is
+        /// based on new samples. If those still say we're far apart so soon, the estimate is likely wrong, so
+        /// ease meanwhile instead of jumping again.
+        /// </summary>
+        private const double JUMP_COOLDOWN = 10.0;
 
         /// <summary>How often to log sync diagnostics during a song.</summary>
         private const double SYNC_LOG_INTERVAL = 5.0;
@@ -57,7 +69,7 @@ namespace YARG.Integration.Link
 
         private bool   _clockCorrecting;
         private double _clockCorrected;
-        private bool   _clockTooFarLogged;
+        private double _lastClockJump;
         private double _nextSyncLog;
 
         private void StartClockSync()
@@ -65,7 +77,7 @@ namespace YARG.Integration.Link
             _clocks.Clear();
             _clockCorrecting = false;
             _clockCorrected = 0;
-            _clockTooFarLogged = false;
+            _lastClockJump = double.NegativeInfinity;
             _nextSyncLog = Now + SYNC_LOG_INTERVAL;
         }
 
@@ -135,18 +147,18 @@ namespace YARG.Integration.Link
 
             double offset = clock.Offset;
             double distance = Math.Abs(offset);
-            if (distance > MAX_CORRECTABLE_OFFSET)
+            if (distance >= JUMP_THRESHOLD && Now - _lastClockJump >= JUMP_COOLDOWN && gm.JumpInputTime(-offset))
             {
-                if (!_clockTooFarLogged)
-                {
-                    YargLogger.LogWarning($"Link sync: our song is {Describe(offset)} {host.Name}'s, " +
-                        "too far apart to correct");
-                    _clockTooFarLogged = true;
-                }
+                YargLogger.LogWarning($"Link sync: our song was {Describe(offset)} {host.Name}'s, " +
+                    "too far apart to ease; jumped into step");
+                _lastClockJump = Now;
                 _clockCorrecting = false;
+                _clockCorrected -= offset;
+
+                // Our clock jumped, so measure again from here
+                clock.Reset();
                 return;
             }
-            _clockTooFarLogged = false;
 
             if (!_clockCorrecting)
             {

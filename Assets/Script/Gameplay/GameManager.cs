@@ -338,6 +338,7 @@ namespace YARG.Gameplay
 
             // Update handlers
             _songRunner.Update();
+            UpdateOnlineCatchUp();
 
             ApplySongSpeed();
             BeatEventHandler.Update(_songRunner.SongTime, _songRunner.VisualTime);
@@ -483,7 +484,10 @@ namespace YARG.Gameplay
 
             // This uses the raw input update time because it keeps running during the pause
             // allowing us to accurately calculate the length of the pause later
-            if (!Rewinding && !IsReplay && !overridePause)
+            // A pause while the song catches up after an online jump back (JumpInputTime) is a usual pause.
+            // Only the rewind of a resume is not.
+            bool resumeRewind = Rewinding && _catchUpSongTime == null;
+            if (!resumeRewind && !IsReplay && !overridePause)
             {
                 // Save state about the pause
                 _pauseTime = InputManager.InputUpdateTime;
@@ -649,6 +653,7 @@ namespace YARG.Gameplay
             _isReplaySaved = false;
 
             Rewinding = false;
+            _catchUpSongTime = null;
 
             foreach (var player in _players)
             {
@@ -1174,6 +1179,12 @@ namespace YARG.Gameplay
             if (PauseInfo.Count > 0)
             {
                 targetTime = PauseInfo[^1].PauseTime;
+            }
+
+            // Online play: the engines are ahead of the song after a jump back (JumpInputTime)
+            if (_catchUpSongTime is { } catchUp)
+            {
+                targetTime = Math.Max(targetTime ?? catchUp, catchUp);
             }
 
             var canceled = await _songRunner.RewindAndResume(seconds, targetTime);
