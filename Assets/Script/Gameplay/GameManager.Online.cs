@@ -374,6 +374,82 @@ namespace YARG.Gameplay
         /// <inheritdoc cref="SongRunner.ShiftInputTime"/>
         public void ShiftInputTime(double seconds) => _songRunner.ShiftInputTime(seconds);
 
+        /// <summary>
+        /// The song time that the engines reached before <see cref="JumpInputTime"/> moved the song back. The
+        /// engines and the inputs of this game wait (<see cref="Rewinding"/>) until the song passes this time
+        /// again. The value is <c>null</c> when no jump back is in progress.
+        /// </summary>
+        private double? _catchUpSongTime;
+
+        /// <summary>
+        /// Online play: move the song by <paramref name="seconds"/> of input time at once, with a seek. The
+        /// clock sync uses this method when the clock of this game is too far from the host's clock for
+        /// <see cref="ShiftInputTime"/>. The player hears a jump in the audio.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A jump forward skips part of the song. The engines of this game miss the notes in that part.
+        /// </para>
+        /// <para>
+        /// A jump back plays part of the song again. The engines must not go back in time. Thus, as in the
+        /// rewind of a resume, the engines and the inputs of this game wait until the song passes the time
+        /// that they reached (<see cref="UpdateOnlineCatchUp"/>). The highways show the notes of that part
+        /// again. A pause during that part is a usual pause. The resume after it also waits for that time.
+        /// </para>
+        /// </remarks>
+        /// <returns>
+        /// False if the jump is not possible now: not online play, not playing, already in a rewind, or past the
+        /// end of the song.
+        /// </returns>
+        public bool JumpInputTime(double seconds)
+        {
+            if (!IsOnlinePlay || !IsSongStarted || Paused || Rewinding || _resumeInProgress || PlayerHasFailed ||
+                seconds == 0 || double.IsNaN(seconds))
+            {
+                return false;
+            }
+
+            double target = InputTime + seconds;
+            if (target + (SongTime - InputTime) >= SongLength)
+            {
+                return false;
+            }
+
+            if (seconds < 0)
+            {
+                _catchUpSongTime = SongTime;
+                Rewinding = true;
+                foreach (var player in _players)
+                {
+                    player.Rewind(VisualTime + seconds);
+                }
+            }
+
+            SetSongTime(target, 0);
+            return true;
+        }
+
+        /// <summary>
+        /// Call each frame before the players update. Ends a jump back of <see cref="JumpInputTime"/> when the
+        /// song passes the time that the engines reached.
+        /// </summary>
+        private void UpdateOnlineCatchUp()
+        {
+            // A resume in progress waits for this time itself (RewindAndResume)
+            if (_catchUpSongTime is not { } catchUp || _resumeInProgress || SongTime <= catchUp)
+            {
+                return;
+            }
+
+            _catchUpSongTime = null;
+            Rewinding = false;
+            foreach (var player in _players)
+            {
+                player.PostRewind(VisualTime);
+                player.SendInputsOnResume();
+            }
+        }
+
         #endregion
     }
 }

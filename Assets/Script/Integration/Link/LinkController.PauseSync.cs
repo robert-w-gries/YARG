@@ -25,8 +25,9 @@ namespace YARG.Integration.Link
     /// The host resumes everyone once the host and every friend in the song are ready. It picks one input time
     /// a little before the latest pause (<see cref="PauseCoordinator"/>) and sends <c>resume</c> with that time
     /// and a lead (<see cref="RESUME_LEAD"/>). Each game, joiners allowing for half the round trip, rewinds to
-    /// that time and plays on at the same moment, the way a synced start does. Clock correction takes care of
-    /// the last few milliseconds.
+    /// that time and plays on at the same moment, the way a synced start does. A game that gets there late
+    /// (the <c>resume</c> arrived after the moment) resumes that much further on, as far as its pause allows.
+    /// Clock correction takes care of the rest.
     /// </para>
     /// <para>
     /// A failed song's pause menu isn't synced: failing is (<c>failed</c>), and the band's meter decides it.
@@ -178,7 +179,7 @@ namespace YARG.Integration.Link
 
             if (_resumeAt is { } at && Now >= at - REWIND_ANIMATION)
             {
-                ExecuteResume(gm);
+                ExecuteResume(gm, at);
                 return;
             }
 
@@ -258,14 +259,28 @@ namespace YARG.Integration.Link
             _resumeInputTime = inputTime;
         }
 
-        private void ExecuteResume(GameManager gm)
+        /// <param name="at">When the song was scheduled to play (on <see cref="Now"/>).</param>
+        private void ExecuteResume(GameManager gm, double at)
         {
             _resumeAt = null;
             if (!gm.Paused || gm.PlayerHasFailed) return;
 
-            double rewind = gm.InputTime - _resumeInputTime;
-            YargLogger.LogInfo($"Link pause: resuming with friends from {_resumeInputTime:0.000}s " +
-                $"(rewinding {rewind:0.000}s from our pause)");
+            // The song plays when the rewind animation ends. If we got here too late for that to be at the
+            // scheduled moment (the resume message arrived late, or a long frame), the others are already that
+            // far into the song. Resume that much further on, so we're in step from the start.
+            double late = Math.Max(0, Now + REWIND_ANIMATION - at);
+            double resumeFrom = _resumeInputTime + late * gm.SongSpeed;
+            double rewind = gm.InputTime - resumeFrom;
+            if (rewind < 0)
+            {
+                // A resume can't go past our pause. Clock correction takes care of the rest.
+                YargLogger.LogWarning($"Link pause: resume came {late * 1000:0} ms late; we'll start " +
+                    $"{-rewind * 1000:0} ms behind the others");
+                rewind = 0;
+            }
+
+            YargLogger.LogInfo($"Link pause: resuming with friends from {gm.InputTime - rewind:0.000}s " +
+                $"(rewinding {rewind:0.000}s from our pause, {late * 1000:0} ms late)");
 
             _resumingFromLink = true;
             try
