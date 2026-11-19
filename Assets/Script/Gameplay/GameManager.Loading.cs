@@ -12,7 +12,6 @@ using YARG.Core.Logging;
 using YARG.Core.Replays;
 using YARG.Gameplay.HUD;
 using YARG.Gameplay.Player;
-using YARG.Integration.Link;
 using YARG.Menu;
 using YARG.Menu.Persistent;
 using YARG.Menu.Settings;
@@ -54,6 +53,13 @@ namespace YARG.Gameplay
         private const double DEFAULT_SAMPLE_VOLUME_MULTIPLIER = 1.0;
 
         private LoadFailureState _loadState;
+
+        /// <summary>
+        /// The slot of the last highway that <see cref="CreatePlayers"/> or <see cref="CreateRemotePlayers"/>
+        /// created. All vocalists use one slot, the vocal track. The vocal track has no
+        /// <see cref="TrackView"/>. Thus the number of track views is not the number of slots.
+        /// </summary>
+        private int _highwayIndex = -1;
         private string _loadFailureMessage;
         // All access to chart data must be done through this event,
         // since things are loaded asynchronously
@@ -234,32 +240,29 @@ namespace YARG.Gameplay
             // Spawn players
             CreatePlayers();
 
-            // Online link: report that we're loaded and wait for the start to be scheduled.
-            // Friends' players are added here, before anything below snapshots the player list.
-            var link = LinkController.Instance;
-            bool linkedStart = false;
-            if (_loadState != LoadFailureState.Error && link != null && IsOnlinePlay)
+            // CreatePlayers is the last step that can fail. For the Rescan state, the method returned before
+            // this line. Thus the state here is None or Error.
+            if (_loadState == LoadFailureState.Error)
             {
-                switch (await link.WaitForStartSignal(this, context))
-                {
-                    case LinkController.StartResult.Cancelled:
-                        global.LoadScene(SceneIndex.Menu);
-                        return;
-                    case LinkController.StartResult.Synced:
-                        linkedStart = true;
-                        CreateRemotePlayers(link.TakeRemotePlayers(Song));
-                        break;
-                }
+                ToastManager.ToastError(_loadFailureMessage);
+
+                global.LoadScene(SceneIndex.Menu);
+                return;
+            }
+
+            // Online play: wait for the friends, and add their highways. Do this before the code below reads
+            // the player list. This call sets IsOnlinePlay.
+            if (!await TryStartOnlinePlay(context))
+            {
+                return;
             }
 
             YargLogger.LogFormatDebug("Calculating star cutoffs for {0} players", _players.Count);
             EngineManager.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(LocalStarScoreThresholds());
             YargLogger.LogFormatDebug("Star score thresholds: {0}", string.Join(", ", EngineManager.StarScoreThresholds));
-            UpdateOnlineBandCutoffs();
-            if (_onlineBand != null)
+            if (IsOnlinePlay)
             {
-                YargLogger.LogFormatDebug("Online band star score thresholds: {0}",
-                    string.Join(", ", _onlineBand.StarScoreThresholds));
+                UpdateOnlineBandCutoffs();
             }
 
 
@@ -268,14 +271,6 @@ namespace YARG.Gameplay
             {
                 state.Total = 1;
                 state.Audible = 1;
-            }
-
-            if (_loadState == LoadFailureState.Error)
-            {
-                ToastManager.ToastError(_loadFailureMessage);
-
-                global.LoadScene(SceneIndex.Menu);
-                return;
             }
 
             // Debug info
@@ -317,13 +312,14 @@ namespace YARG.Gameplay
                 SettingsManager.Settings.NoFail.OnChange += OnNoFailModeChanged;
             }
 
-            var noFail = ReplayData?.NoFail ?? NoFailMode != NoFailMode.Off;
-            // Online link: only the host's band meter can fail the song
-            EngineManager.InitializeHappiness(noFail || BandMeterIsRemote);
-            foreach (var remote in _remoteEngineManagers.Values)
+            if (IsOnlinePlay)
             {
-                // A friend's fail meter is theirs to run; their mirrored highways keep going here regardless
-                remote.InitializeHappiness(true);
+                InitializeOnlineHappiness();
+            }
+            else
+            {
+                var noFail = ReplayData?.NoFail ?? NoFailMode != NoFailMode.Off;
+                EngineManager.InitializeHappiness(noFail);
             }
             CrowdEventHandler?.UpdateCrowdMuteState(force: true);
 
@@ -335,10 +331,9 @@ namespace YARG.Gameplay
             YargLogger.LogFormatDebug("Audio calibration: {0}, video calibration: {1}, song offset: {2}",
                 _songRunner.AudioCalibration, _songRunner.VideoCalibration, _songRunner.SongOffset);
 
-            // Online link: start at the same moment as everyone else
-            if (linkedStart)
+            if (IsOnlinePlay)
             {
-                await link.WaitForStartTime();
+                await WaitForOnlineStartTime();
             }
 
             // Loaded, enable updates
@@ -491,7 +486,7 @@ namespace YARG.Gameplay
                 bool vocalTrackInitialized = false;
 
                 int index = -1;
-                int highwayIndex = -1;
+                _highwayIndex = -1;
                 int vocalIndex = -1;
                 foreach (var player in YargPlayers)
                 {
@@ -528,33 +523,24 @@ namespace YARG.Gameplay
 
                     if (player.Profile.GameMode != GameMode.Vocals)
                     {
-                        highwayIndex++;
+                        _highwayIndex++;
                         var prefab = GetTrackPrefab(player.Profile);
 
                         // Skip if there's no prefab for the game mode
                         if (prefab == null) continue;
 
-                        var playerObject = Instantiate(prefab,
-                            new Vector3(highwayIndex * TRACK_SPACING_X, 100f, 0f), prefab.transform.rotation);
-
-                        // Setup player
-                        var trackPlayer = playerObject.GetComponent<TrackPlayer>();
-                        var trackView = _trackViewManager.CreateTrackView();
-                        trackPlayer.Initialize(highwayIndex, player, Chart, trackView, _mixer, lastHighScore);
-
-                        _players.Add(trackPlayer);
-                        _trackViewManager.AddTrackPlayer(trackPlayer);
+                        CreateTrackPlayer(prefab, player, lastHighScore);
                     }
                     else
                     {
                         // Initialize the vocal track if it hasn't been already, and hide lyric bar
                         if (!vocalTrackInitialized)
                         {
-                            highwayIndex++;
+                            _highwayIndex++;
                             VocalTrack.gameObject.SetActive(true);
                             // Position the vocal track at its highway slot so the shader's WorldPosToIndex maps it correctly
-                            VocalTrack.transform.position = new Vector3(highwayIndex * TRACK_SPACING_X, 100, 0);
-                            _trackViewManager.CreateVocalTrackView(highwayIndex);
+                            VocalTrack.transform.position = new Vector3(_highwayIndex * TRACK_SPACING_X, 100, 0);
+                            _trackViewManager.CreateVocalTrackView(_highwayIndex);
 
                             // Use GetVocalsTrack so PartyVocals gets the correct track
                             // (harmony when available, solo vocals fallback for songs
@@ -587,7 +573,6 @@ namespace YARG.Gameplay
                         _players.Add(vocalsPlayer);
                     }
 
-                    _highwayCount = highwayIndex + 1;
 
                     // Add (or increase total of) the stem state
                     var hasStem = false;
@@ -638,42 +623,28 @@ namespace YARG.Gameplay
         }
 
         /// <summary>
-        /// Add a highway for each of a friend's players over the online link. They play back the inputs
-        /// streamed from the friend's game, like a replay that's still being recorded.
+        /// Create a highway for <paramref name="player"/> in the slot <see cref="_highwayIndex"/>. Use this
+        /// method for the players of this game. In online play, also use it for the players of friends.
         /// </summary>
-        private void CreateRemotePlayers(List<(ReplayFrame Frame, ReplayData Data, RemoteInputFeed Feed)> remotePlayers)
+        private TrackPlayer CreateTrackPlayer(GameObject prefab, YargPlayer player, int? lastHighScore)
         {
-            foreach (var (frame, data, feed) in remotePlayers)
+            var playerObject = Instantiate(prefab,
+                new Vector3(_highwayIndex * TRACK_SPACING_X, 100f, 0f), prefab.transform.rotation);
+
+            try
             {
-                GameObject playerObject = null;
-                try
-                {
-                    var player = new YargPlayer(frame, data, feed);
-                    if (player.Profile.GameMode == GameMode.Vocals) continue;
+                var trackPlayer = playerObject.GetComponent<TrackPlayer>();
+                var trackView = _trackViewManager.CreateTrackView();
+                trackPlayer.Initialize(_highwayIndex, player, Chart, trackView, _mixer, lastHighScore);
 
-                    var prefab = GetTrackPrefab(player.Profile);
-                    if (prefab == null) continue;
-
-                    int highwayIndex = _highwayCount;
-                    playerObject = Instantiate(prefab,
-                        new Vector3(highwayIndex * TRACK_SPACING_X, 100f, 0f), prefab.transform.rotation);
-
-                    var trackPlayer = playerObject.GetComponent<TrackPlayer>();
-                    var trackView = _trackViewManager.CreateTrackView();
-                    trackPlayer.Initialize(highwayIndex, player, Chart, trackView, _mixer, null);
-
-                    _players.Add(trackPlayer);
-                    _trackViewManager.AddTrackPlayer(trackPlayer);
-                    _highwayCount++;
-
-                    YargLogger.LogFormatInfo("Link: added {0}'s {1} track", player.Profile.Name,
-                        player.Profile.CurrentInstrument);
-                }
-                catch (Exception ex)
-                {
-                    YargLogger.LogException(ex, $"Link: failed to add {feed.Name}'s track");
-                    if (playerObject != null) Destroy(playerObject);
-                }
+                _players.Add(trackPlayer);
+                _trackViewManager.AddTrackPlayer(trackPlayer);
+                return trackPlayer;
+            }
+            catch
+            {
+                Destroy(playerObject);
+                throw;
             }
         }
     }

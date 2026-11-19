@@ -10,20 +10,27 @@ namespace YARG.Gameplay.HUD
         [SerializeField]
         private GameObject _separatorObject;
 
+        // This menu has a different navigation scheme. Thus it does not call base.OnEnable().
         protected override void OnEnable()
         {
-            HideOnlineOptions();
-            if (GameManager != null && GameManager.IsOnlinePlay)
+            if (IsOnlinePlay)
             {
-                // Only "Back to Library" is left, so there's nothing for the separators to divide
-                _separatorObject.SetActive(false);
-                foreach (Transform child in _separatorObject.transform.parent)
-                {
-                    if (child.name.StartsWith("Separator")) child.gameObject.SetActive(false);
-                }
+                BuildOnlineOptions();
             }
 
             HandleNavigationScheme();
+        }
+
+        protected override void BuildOnlineOptions()
+        {
+            base.BuildOnlineOptions();
+
+            // Only "Back to Library" stays. Thus the separators are not necessary.
+            _separatorObject.SetActive(false);
+            foreach (Transform child in _separatorObject.transform.parent)
+            {
+                if (child.name.StartsWith("Separator")) child.gameObject.SetActive(false);
+            }
         }
 
         private async void HandleNavigationScheme()

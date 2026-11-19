@@ -137,12 +137,6 @@ namespace YARG.Gameplay.Player
         public double EngineLag { get; private set; }
 
         /// <summary>
-        /// The visual time this player's track is drawn at. Use this instead of
-        /// <see cref="GameManager.VisualTime"/> for anything positioned on the track.
-        /// </summary>
-        public double PlayerVisualTime => GameManager.VisualTime;
-
-        /// <summary>
         /// How far past the strike line (in track units) this player's notes need to stay before they're
         /// removed, so a remote player's late hits still find them. Capped, so a stalled connection doesn't
         /// keep every passed note around.
@@ -167,7 +161,7 @@ namespace YARG.Gameplay.Player
             //Ensure hud elements get repositioned on screen size change
             if (ScreenSizeDetector.HasScreenSizeChanged)
             {
-                UpdateVisuals(PlayerVisualTime);
+                UpdateVisuals(GameManager.VisualTime);
             }
         }
 
@@ -256,7 +250,7 @@ namespace YARG.Gameplay.Player
                 UpdateInputs(time);
             }
 
-            UpdateVisuals(PlayerVisualTime);
+            UpdateVisuals(GameManager.VisualTime);
         }
 
         protected abstract void UpdateVisuals(double visualTime);
