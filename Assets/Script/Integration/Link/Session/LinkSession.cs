@@ -96,7 +96,12 @@ namespace YARG.Integration.Link.Session
         /// <summary>Drop connections that haven't said hello within this long.</summary>
         public double HelloTimeoutSeconds = 10.0;
 
-        /// <summary>Host only: the most joiners at once. More are refused with <see cref="ByeCodes.FULL"/>.</summary>
+        /// <summary>
+        /// Host only: the most joiners at once. The host is not a joiner, thus a full session has
+        /// <see cref="MaxMembers"/> + 1 members. More joiners are refused with <see cref="ByeCodes.FULL"/>.
+        /// This limit is for the network: the host sends the inputs of each member to all other joiners. The
+        /// limit for players is <see cref="LinkLimits.MAX_SESSION_PLAYERS"/>.
+        /// </summary>
         public int MaxMembers = 8;
 
         /// <summary>Host only: connections that haven't said hello yet. More are dropped straight away.</summary>
@@ -316,6 +321,9 @@ namespace YARG.Integration.Link.Session
 
         /// <summary>The players last passed to <see cref="SetLocalState"/>.</summary>
         public IReadOnlyList<PlayerInfo> LocalPlayers => _localPlayers;
+
+        /// <summary>The players of this game and of all members that we know of.</summary>
+        public int PlayerCount() => _localPlayers.Count + _members.Values.Sum(member => member.Players.Count);
 
         /// <summary>The status last passed to <see cref="SetLocalState"/>.</summary>
         public string LocalStatus => _localStatus;
@@ -623,6 +631,13 @@ namespace YARG.Integration.Link.Session
             if (Role == LinkRole.Host && _members.Count >= _options.MaxMembers)
             {
                 Refuse(state, "the session is full", ByeCodes.FULL);
+                return;
+            }
+
+            // The new joiner has at least one player, and its player list comes after this hello
+            if (Role == LinkRole.Host && PlayerCount() >= LinkLimits.MAX_SESSION_PLAYERS)
+            {
+                Refuse(state, $"the session has {LinkLimits.MAX_SESSION_PLAYERS} players", ByeCodes.FULL);
                 return;
             }
 

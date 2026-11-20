@@ -13,12 +13,26 @@
 //!
 //! Errors never include the ticket: it's an invite code, and what the player pasted may not even
 //! be one (anything from the clipboard), and errors end up in logs.
+//!
+//! A ticket comes from outside the game (the clipboard, a Discord invite), so `parse` checks all of
+//! it. The length and the number of addresses have limits, the endpoint ID must be a valid key, and
+//! each address must be a socket address or a relay URL. Anything else is an error.
 
 use std::{net::SocketAddr, str::FromStr};
 
 use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 
+/// The longest ticket, in bytes. A ticket with a few addresses and a relay URL is about 300 bytes.
+pub const MAX_TICKET_LEN: usize = 4096;
+
+/// The most addresses (direct addresses and relay URLs together) in one ticket.
+pub const MAX_TICKET_ADDRS: usize = 32;
+
+/// Read a ticket. Spaces around the parts are ignored.
 pub fn parse(ticket: &str) -> Result<EndpointAddr, String> {
+    if ticket.len() > MAX_TICKET_LEN {
+        return Err(format!("ticket is longer than {MAX_TICKET_LEN} bytes"));
+    }
     let ticket = ticket.trim();
     if ticket.is_empty() {
         return Err("empty ticket".into());
@@ -31,21 +45,49 @@ pub fn parse(ticket: &str) -> Result<EndpointAddr, String> {
     let id = EndpointId::from_str(id.trim()).map_err(|e| format!("not an endpoint ID ({e})"))?;
 
     let mut addr = EndpointAddr::new(id);
-    for part in addrs.into_iter().flat_map(|a| a.split(',')).map(str::trim) {
-        if part.is_empty() {
-            continue;
+    let parts = addrs.into_iter().flat_map(|a| a.split(',')).map(str::trim).filter(|p| !p.is_empty());
+    for (count, part) in parts.enumerate() {
+        if count >= MAX_TICKET_ADDRS {
+            return Err(format!("ticket has more than {MAX_TICKET_ADDRS} addresses"));
         }
-        if part.starts_with("http://") || part.starts_with("https://") {
-            let url = RelayUrl::from_str(part).map_err(|e| format!("bad relay URL ({e})"))?;
-            addr = addr.with_relay_url(url);
-        } else {
-            let ip = SocketAddr::from_str(part).map_err(|e| format!("bad address ({e})"))?;
-            addr = addr.with_ip_addr(ip);
-        }
+        addr = match TicketPart::parse(part)? {
+            TicketPart::Relay(url) => addr.with_relay_url(url),
+            TicketPart::Direct(ip) => addr.with_ip_addr(ip),
+        };
     }
     Ok(addr)
 }
 
+/// One address of a ticket, after `@`.
+enum TicketPart {
+    Relay(RelayUrl),
+    Direct(SocketAddr),
+}
+
+impl TicketPart {
+    fn parse(part: &str) -> Result<TicketPart, String> {
+        if part.starts_with("http://") || part.starts_with("https://") {
+            return RelayUrl::from_str(part).map(TicketPart::Relay).map_err(|e| format!("bad relay URL ({e})"));
+        }
+        // An IPv4 or IPv6 address with a port. The parser accepts no other text, for example no host
+        // names. The address is not trusted after this: iroh only sends QUIC packets to it, and the
+        // TLS handshake checks that the peer has the key of the endpoint ID.
+        if let Ok(ip) = SocketAddr::from_str(part) {
+            return Ok(TicketPart::Direct(ip));
+        }
+        Err("an address is not an IP address with a port or a relay URL".into())
+    }
+}
+
+/// Make the ticket for `addr`.
+///
+/// When `with_addrs` is false, the ticket is only the endpoint ID. Another game then finds the
+/// addresses through n0's DNS (`address_lookup`).
+///
+/// When `with_addrs` is true, the ticket is the endpoint ID, then `@`, then the direct addresses and
+/// relay URL of `addr`, with commas between them. Another game can then connect without DNS. If
+/// `addr` has no addresses, the ticket is only the endpoint ID. The ticket can be long, and it has
+/// the local IP addresses of this computer.
 pub fn format(addr: &EndpointAddr, with_addrs: bool) -> String {
     let mut out = addr.id.to_string();
     if !with_addrs {
@@ -109,6 +151,17 @@ mod tests {
         assert!(parse("not-a-key").is_err());
         let id = SecretKey::generate().public();
         assert!(parse(&format!("{id}@nowhere")).is_err());
+        assert!(parse(&format!("{id}@localhost:4000")).is_err(), "host names are not addresses");
+    }
+
+    #[test]
+    fn size_limits() {
+        let id = SecretKey::generate().public();
+        let many = vec!["127.0.0.1:4000"; MAX_TICKET_ADDRS].join(",");
+        assert!(parse(&format!("{id}@{many}")).is_ok());
+        assert!(parse(&format!("{id}@{many},127.0.0.1:4001")).unwrap_err().contains("addresses"));
+        let long = format!("{id}{}", " ".repeat(MAX_TICKET_LEN));
+        assert!(parse(&long).unwrap_err().contains("longer"));
     }
 
     #[test]

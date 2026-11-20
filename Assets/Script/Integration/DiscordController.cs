@@ -531,6 +531,8 @@ namespace YARG.Integration
             // see our activity
             id = PartyId(code);
             secret = code;
+            // Discord counts people. This game is one member, and MaxMembers counts only joiners, thus the host
+            // adds 1 to both values. A full session is 8 joiners and the host: 9 people.
             size = session.Members.Count + 1;
             max = Math.Max(size, new LinkSessionOptions().MaxMembers + 1);
         }

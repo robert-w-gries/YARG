@@ -341,6 +341,28 @@ namespace YARG.Link.Tests
         }
 
         [Test]
+        public void SessionWithAllPlayersRefusesJoiners()
+        {
+            var host = Add(LinkRole.Host, "Host");
+            var a = Add(LinkRole.Join, "A");
+            var b = Add(LinkRole.Join, "B");
+
+            // A brings 16 players and the host 15: one more player fits
+            var player = new PlayerInfo { Name = "P", Instrument = "FiveFretGuitar", Difficulty = "Expert" };
+            a.Session.SetLocalState("browsing", Enumerable.Repeat(player, LinkLimits.MAX_PLAYERS_PER_MEMBER).ToArray());
+            host.Session.SetLocalState("browsing", Enumerable.Repeat(player, 15).ToArray());
+            a.Session.Join(host.Session.LocalTicket);
+            PumpUntil(() => host.HasMembers("A") && host.Session.PlayerCount() == 31);
+
+            // The last slot goes to the host's own player, and then nobody else fits
+            host.Session.SetLocalState("browsing", Enumerable.Repeat(player, 16).ToArray());
+            b.Session.Join(host.Session.LocalTicket);
+            PumpUntil(() => b.Disconnects.Count == 1);
+            Assert.That(b.Disconnects[0].Code, Is.EqualTo(ByeCodes.FULL));
+            Assert.That(host.HasMembers("A"), Is.True);
+        }
+
+        [Test]
         public void ConnectionsThatNeverSayHelloAreCapped()
         {
             var host = Add(LinkRole.Host, "Host", configure: o => o.MaxUnadmittedPeers = 2);
