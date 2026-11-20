@@ -183,7 +183,7 @@ namespace YARG.Gameplay.HUD
                 var handleImage = _playerSliders[i].handleRect.GetComponentInChildren<Image>();
                 var spriteName = _players[i].SpriteName;
 
-                // If the sprite name is null, the icon keeps its default image. LinkController logs the cause.
+                // If the sprite name is null or empty, the icon keeps its default image.
                 if (!string.IsNullOrEmpty(spriteName))
                 {
                     handleImage.sprite = Addressables.LoadAssetAsync<Sprite>(spriteName).WaitForCompletion();

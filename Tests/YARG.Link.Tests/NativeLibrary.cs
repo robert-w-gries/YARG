@@ -40,6 +40,8 @@ namespace YARG.Link.Tests
                 TicketAddresses = true,
                 ConnectTimeout = TimeSpan.FromSeconds(5),
                 LogFilter = "warn",
+                // Each test transport can be a host
+                Accept = true,
             };
             configure?.Invoke(config);
             return new NativeLinkTransport(Path, config);

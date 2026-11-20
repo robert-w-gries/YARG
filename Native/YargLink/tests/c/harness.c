@@ -56,7 +56,7 @@ static peer_id_fn yl_peer_id_;
 
 static const char *CONFIG =
     "{\"relay\": false, \"address_lookup\": false, \"bind_addr\": \"127.0.0.1:0\","
-    " \"ticket_addrs\": true, \"log_filter\": \"warn\"}";
+    " \"ticket_addrs\": true, \"log_filter\": \"warn\", \"accept\": true}";
 
 static int failures = 0;
 
@@ -84,7 +84,7 @@ static int next_event(yl_handle *h, yl_event *ev, uint8_t *buf, size_t cap, int 
     for (int waited = 0; waited <= timeout_ms; ) {
         int rc = yl_poll_(h, ev, buf, cap);
         if (rc == 1 && ev->type == YL_EVENT_LOG) {
-            fprintf(stderr, "  [log %u] %.*s\n", ev->level, (int) ev->len, (const char *) buf);
+            fprintf(stderr, "  [log %u] %.*s\n", ev->log_level, (int) ev->len, (const char *) buf);
             continue;
         }
         if (rc == 1) return 1;

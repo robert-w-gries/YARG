@@ -11,6 +11,7 @@ using YARG.Core.Logging;
 using YARG.Core.Replays;
 using YARG.Gameplay.HUD;
 using YARG.Gameplay.Player;
+using YARG.Gameplay.Visuals;
 using YARG.Input;
 using YARG.Integration.Link;
 using YARG.Menu;
@@ -160,6 +161,15 @@ namespace YARG.Gameplay
                 {
                     YargLogger.LogFormatWarning("Link: no highway for {0}'s {1} ({2})", feed.Name,
                         player.Profile.CurrentInstrument, player.Profile.GameMode);
+                    continue;
+                }
+
+                // The highway renderer has a fixed number of slots. The host does not let in a joiner when the
+                // session is full (LinkLimits.MAX_SESSION_PLAYERS), but a friend can add players after that.
+                if (_highwayIndex + 1 >= HighwayCameraRendering.MAX_MATRICES)
+                {
+                    YargLogger.LogFormatWarning("Link: no highway for {0}'s {1}: all {2} highways are in use",
+                        feed.Name, player.Profile.CurrentInstrument, HighwayCameraRendering.MAX_MATRICES);
                     continue;
                 }
 

@@ -36,10 +36,13 @@ namespace YARG.Integration.Link.Transport
         /// <summary>Which log lines to report, as a tracing filter; <c>null</c> for the library default.</summary>
         public string LogFilter;
 
-        /// <summary>Accept incoming connections. Off for a game that only joins others.</summary>
-        public bool Accept = true;
+        /// <summary>Accept incoming connections. Only a host turns this on; it is off for a game that only joins others.</summary>
+        public bool Accept;
 
-        /// <summary>The most peers at once, counting incoming connections that are still handshaking.</summary>
+        /// <summary>
+        /// The most peers at once, counting incoming connections that are still handshaking. This is a limit of the
+        /// library, not the party size: <c>LinkController</c> gives its own value.
+        /// </summary>
         public int MaxPeers = 16;
 
         internal string ToJson()
@@ -95,12 +98,13 @@ namespace YARG.Integration.Link.Transport
     /// </remarks>
     public sealed class NativeLinkTransport : ILinkTransport
     {
+        /// <summary>The largest unreliable message (<c>YL_MAX_UNRELIABLE</c>).</summary>
         public const int MAX_UNRELIABLE_SIZE = 1024;
 
         /// <summary>The largest reliable message (<c>YL_MAX_RELIABLE</c>).</summary>
         public const int MAX_RELIABLE_SIZE = 1024 * 1024 - 1;
 
-        private const int ABI_VERSION = 3;
+        private const int ABI_VERSION = 4;
 
         private const int YL_OK                   = 0;
         private const int YL_ERR_BAD_TICKET       = -4;
@@ -235,7 +239,7 @@ namespace YARG.Integration.Link.Transport
                         ev = LinkEvent.Error(Text(len));
                         return true;
                     case EVENT_LOG:
-                        Log?.Invoke((NativeLogLevel) native.Level, Text(len));
+                        Log?.Invoke((NativeLogLevel) native.LogLevel, Text(len));
                         break;
                     default:
                         // From a newer library; skip it
@@ -405,7 +409,7 @@ namespace YARG.Integration.Link.Transport
                 public uint  Type;
                 public uint  Peer;
                 public uint  Channel;
-                public uint  Level;
+                public uint  LogLevel;
                 public ulong Len;
             }
 

@@ -251,7 +251,8 @@ namespace YARG.Gameplay
             }
 
             // Online play: wait for the friends, and add their highways. Do this before the code below reads
-            // the player list. This call sets IsOnlinePlay.
+            // the player list. This call sets IsOnlinePlay, thus it cannot check IsOnlinePlay first. When the
+            // song is not online play, it returns true immediately.
             if (!await TryStartOnlinePlay(context))
             {
                 return;

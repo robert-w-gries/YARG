@@ -61,11 +61,24 @@ internal static class LinkBuildCommand
     private const string RemappedSource = "/yarg-link";
     private const string RemappedCargoHome = "/cargo";
 
-    private static readonly string[] Exports =
-    [
-        "yl_abi_version", "yl_last_error", "yl_create", "yl_destroy", "yl_local_ticket",
-        "yl_connect", "yl_disconnect", "yl_send", "yl_poll", "yl_peer_stats",
-    ];
+    /// <summary>
+    /// Every function that <c>include/yarg_link.h</c> declares with <c>YL_API</c>. The header is the list, so a
+    /// new function needs no change here. The Windows step of <c>native-link.yml</c> reads the header the same way.
+    /// </summary>
+    private static string[] ReadExports(RepositoryLayout repository)
+    {
+        string header = File.ReadAllText(Path.Combine(repository.LinkDirectory, "include", "yarg_link.h"));
+        string[] names = Regex.Matches(header, @"YL_API\s+[^;(]*?\b(yl_[a-z_]+)\s*\(")
+            .Select(match => match.Groups[1].Value)
+            .Distinct()
+            .Order()
+            .ToArray();
+        if (names.Length == 0)
+        {
+            throw new ToolException("Found no functions in yarg_link.h.");
+        }
+        return names;
+    }
 
     public static async Task<int> RunAsync(
         RepositoryLayout repository,
@@ -249,7 +262,7 @@ internal static class LinkBuildCommand
                         $"{plugin.BinaryName} needs glibc {newest}, newer than the {GlibcFloor} floor.");
                 }
 
-                RequireExports(plugin, symbols.StandardOutput);
+                RequireExports(repository, plugin, symbols.StandardOutput);
                 break;
             }
             case NativePlatform.MacOS:
@@ -258,15 +271,15 @@ internal static class LinkBuildCommand
                     "lipo", [binary, "-verify_arch", "x86_64", "arm64"], repository.Root);
                 CommandResult symbols = await CaptureCheckedAsync(
                     "nm", ["-gU", binary], repository.Root);
-                RequireExports(plugin, symbols.StandardOutput);
+                RequireExports(repository, plugin, symbols.StandardOutput);
                 break;
             }
         }
     }
 
-    private static void RequireExports(LinkPlugin plugin, string symbolTable)
+    private static void RequireExports(RepositoryLayout repository, LinkPlugin plugin, string symbolTable)
     {
-        string[] missing = Exports
+        string[] missing = ReadExports(repository)
             .Where(name => !Regex.IsMatch(symbolTable, $@"(?m)\b_?{name}\s*$"))
             .ToArray();
         if (missing.Length > 0)
