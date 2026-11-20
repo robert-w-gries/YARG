@@ -57,11 +57,15 @@ packet arrives again. The unreliable channel does not stop.
 - **The configuration is strict.** An unknown member or a bad value gives `YL_ERR_BAD_CONFIG`. The
   library does not use the defaults in place of a bad configuration.
 - **Logs go through the event queue** (`YL_EVENT_LOG`). The `log_filter` configuration selects
-  the log lines.
+  the log lines. The default filter drops the library's debug lines. YARG asks for them when the
+  player sets the minimum log level to Debug or Trace (`LinkController.NativeLogFilter`).
 - **Wire format.** The ALPN is `yarg-link/3`. Each connection has one bidirectional QUIC stream for
   reliable messages. The stream has frames: `[u32 length][u8 kind][payload]`. Unreliable messages
-  are QUIC datagrams. The two games send a hello frame first. A peer is connected when its hello
-  arrives.
+  are QUIC datagrams. The two games send a hello frame first: the game that connects sends first,
+  and the host answers. A peer is connected when the hellos are done. A frame of an unknown kind,
+  or a second hello, disconnects the peer: a game with the same ALPN never sends them. If you
+  change the wire format, change the ALPN too. The test `wire_format_is_unchanged` fails to remind
+  you.
 - **Limits.** The library treats each peer as possibly hostile.
   - A reliable frame is at most 1 MiB (`YL_MAX_RELIABLE`). A hello is at most 64 bytes. If a peer
     announces a larger frame, the library disconnects it before it reads the payload. Frame buffers

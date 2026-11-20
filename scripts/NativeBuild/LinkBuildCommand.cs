@@ -62,23 +62,25 @@ internal static class LinkBuildCommand
     private const string RemappedCargoHome = "/cargo";
 
     /// <summary>
-    /// Every function that <c>include/yarg_link.h</c> declares with <c>YL_API</c>. The header is the list, so a
-    /// new function needs no change here. The Windows step of <c>native-link.yml</c> reads the header the same way.
+    /// The functions that the plugin must export: each function that <c>include/yarg_link.h</c> declares with
+    /// <c>YL_API</c>. When you add a function to the header, add it here, and to the <c>BIND</c> list in
+    /// <c>tests/c/harness.c</c>. If you forget it here, the Windows step of <c>native-link.yml</c> still finds
+    /// the missing export: it reads the list from the header.
     /// </summary>
-    private static string[] ReadExports(RepositoryLayout repository)
-    {
-        string header = File.ReadAllText(Path.Combine(repository.LinkDirectory, "include", "yarg_link.h"));
-        string[] names = Regex.Matches(header, @"YL_API\s+[^;(]*?\b(yl_[a-z_]+)\s*\(")
-            .Select(match => match.Groups[1].Value)
-            .Distinct()
-            .Order()
-            .ToArray();
-        if (names.Length == 0)
-        {
-            throw new ToolException("Found no functions in yarg_link.h.");
-        }
-        return names;
-    }
+    private static readonly string[] Exports =
+    [
+        "yl_abi_version",
+        "yl_connect",
+        "yl_create",
+        "yl_destroy",
+        "yl_disconnect",
+        "yl_last_error",
+        "yl_local_ticket",
+        "yl_peer_id",
+        "yl_peer_stats",
+        "yl_poll",
+        "yl_send",
+    ];
 
     public static async Task<int> RunAsync(
         RepositoryLayout repository,
@@ -262,7 +264,7 @@ internal static class LinkBuildCommand
                         $"{plugin.BinaryName} needs glibc {newest}, newer than the {GlibcFloor} floor.");
                 }
 
-                RequireExports(repository, plugin, symbols.StandardOutput);
+                RequireExports(plugin, symbols.StandardOutput);
                 break;
             }
             case NativePlatform.MacOS:
@@ -271,15 +273,15 @@ internal static class LinkBuildCommand
                     "lipo", [binary, "-verify_arch", "x86_64", "arm64"], repository.Root);
                 CommandResult symbols = await CaptureCheckedAsync(
                     "nm", ["-gU", binary], repository.Root);
-                RequireExports(repository, plugin, symbols.StandardOutput);
+                RequireExports(plugin, symbols.StandardOutput);
                 break;
             }
         }
     }
 
-    private static void RequireExports(RepositoryLayout repository, LinkPlugin plugin, string symbolTable)
+    private static void RequireExports(LinkPlugin plugin, string symbolTable)
     {
-        string[] missing = ReadExports(repository)
+        string[] missing = Exports
             .Where(name => !Regex.IsMatch(symbolTable, $@"(?m)\b_?{name}\s*$"))
             .ToArray();
         if (missing.Length > 0)

@@ -13,8 +13,25 @@ use crate::{
     log,
 };
 
+/// The default `connect_timeout_ms`: 20 seconds.
+///
+/// A connect can need this much time when the host started a short time ago. Then the joiner
+/// must wait until the host's addresses are in n0's DNS (some seconds), and then hole punching
+/// can take some more seconds, before the relay is used. A connect that takes longer than 20 s
+/// usually does not succeed, and a player who waits longer thinks that the game stopped. A
+/// caller with other needs gives its own value.
+const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 20_000;
+
 /// The longest `connect_timeout_ms`: 10 minutes. A longer value is almost certainly a mistake.
 const MAX_CONNECT_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+
+/// The default `max_peers`: 16.
+///
+/// YARG gives its own value (refer to `LinkController.TransportMaxPeers`), so this default is for
+/// other callers and for tests. 16 is more than a group of friends needs, and it limits the cost
+/// of a host that is full: each peer has its own tasks and connection, and up to 32 MiB of
+/// messages can wait in each direction for each peer.
+const DEFAULT_MAX_PEERS: usize = 16;
 
 /// The most `max_peers`. Each peer has a connection and tasks, so a very large value is a mistake.
 const MAX_MAX_PEERS: usize = 1024;
@@ -43,10 +60,10 @@ impl Default for ConfigJson {
             address_lookup: true,
             bind_addr: None,
             ticket_addrs: false,
-            connect_timeout_ms: 20_000,
+            connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
             log_filter: log::DEFAULT_FILTER.into(),
             accept: false,
-            max_peers: 16,
+            max_peers: DEFAULT_MAX_PEERS,
         }
     }
 }
@@ -59,7 +76,9 @@ pub struct Config {
     /// Publish this endpoint's addresses in n0's DNS, and find other endpoints there. With this,
     /// a ticket can be only an endpoint ID.
     pub address_lookup: bool,
-    /// One socket at this address, in place of iroh's default sockets.
+    /// One socket at this address, in place of iroh's default sockets. `None` (the JSON has no
+    /// `bind_addr`) keeps iroh's default sockets: one IPv4 and one IPv6 socket on all network
+    /// interfaces, each on a random free port. Refer to `Node::bind`.
     pub bind_addr: Option<SocketAddr>,
     /// Put the direct addresses and the relay URL in `yl_local_ticket`.
     pub ticket_addrs: bool,
@@ -114,13 +133,9 @@ impl Config {
             return Err(YlError::bad_config(format!("log_filter is longer than {MAX_LOG_FILTER_LEN} bytes")));
         }
 
-        let bind_addr = match json.bind_addr.as_deref() {
-            None => None,
-            Some(text) => Some(
-                text.parse::<SocketAddr>()
-                    .map_err(|e| YlError::bad_config(format!("bad bind_addr \"{text}\": {e}")))?,
-            ),
-        };
+        // No bind_addr is correct, and is not an error: then the endpoint uses iroh's default
+        // sockets (refer to Config::bind_addr). A bind_addr must be an IP address with a port.
+        let bind_addr = json.bind_addr.as_deref().map(parse_bind_addr).transpose()?;
 
         Ok(Config {
             relay: json.relay,
@@ -133,6 +148,11 @@ impl Config {
             max_peers: json.max_peers,
         })
     }
+}
+
+fn parse_bind_addr(text: &str) -> Result<SocketAddr> {
+    text.parse::<SocketAddr>()
+        .map_err(|e| YlError::bad_config(format!("bad bind_addr \"{text}\": {e}")))
 }
 
 #[cfg(test)]
@@ -151,8 +171,8 @@ mod tests {
         let config = Config::from_json("  ").unwrap();
         assert!(config.relay && config.address_lookup && !config.ticket_addrs);
         assert!(!config.accept, "only a host accepts connections, and it must ask for that");
-        assert_eq!(config.max_peers, 16);
-        assert_eq!(config.connect_timeout, Duration::from_secs(20));
+        assert_eq!(config.max_peers, DEFAULT_MAX_PEERS);
+        assert_eq!(config.connect_timeout, Duration::from_millis(DEFAULT_CONNECT_TIMEOUT_MS));
         assert!(config.bind_addr.is_none());
     }
 

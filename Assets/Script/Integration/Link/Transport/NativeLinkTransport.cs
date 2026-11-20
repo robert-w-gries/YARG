@@ -104,18 +104,23 @@ namespace YARG.Integration.Link.Transport
         /// <summary>The largest reliable message (<c>YL_MAX_RELIABLE</c>).</summary>
         public const int MAX_RELIABLE_SIZE = 1024 * 1024 - 1;
 
-        private const int ABI_VERSION = 4;
+        // Copies of values in yarg_link.h. C# cannot read the header, so it has its own copies.
+        // HeaderConstantsTests checks that they agree with the header. They are internal for that test.
+        internal const int ABI_VERSION = 4;
 
-        private const int YL_OK                   = 0;
-        private const int YL_ERR_BAD_TICKET       = -4;
-        private const int YL_ERR_BUFFER_TOO_SMALL = -5;
-        private const int YL_ERR_TOO_LARGE        = -6;
+        internal const int YL_OK                   = 0;
+        internal const int YL_ERR_BAD_TICKET       = -4;
+        internal const int YL_ERR_BUFFER_TOO_SMALL = -5;
+        internal const int YL_ERR_TOO_LARGE        = -6;
 
-        private const uint EVENT_PEER_CONNECTED    = 1;
-        private const uint EVENT_PEER_DISCONNECTED = 2;
-        private const uint EVENT_MESSAGE           = 3;
-        private const uint EVENT_ERROR             = 4;
-        private const uint EVENT_LOG               = 5;
+        internal const uint EVENT_PEER_CONNECTED    = 1;
+        internal const uint EVENT_PEER_DISCONNECTED = 2;
+        internal const uint EVENT_MESSAGE           = 3;
+        internal const uint EVENT_ERROR             = 4;
+        internal const uint EVENT_LOG               = 5;
+
+        internal const uint PATH_DIRECT = 1;
+        internal const uint PATH_RELAY  = 2;
 
         private IntPtr _handle;
         private byte[] _buffer = new byte[64 * 1024];
@@ -260,8 +265,8 @@ namespace YARG.Integration.Link.Transport
 
             var path = stats.Path switch
             {
-                1 => LinkPath.Direct,
-                2 => LinkPath.Relay,
+                PATH_DIRECT => LinkPath.Direct,
+                PATH_RELAY  => LinkPath.Relay,
                 _ => LinkPath.Unknown,
             };
             return new PeerStats(
