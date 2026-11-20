@@ -21,8 +21,15 @@ namespace YARG.Integration.Link.Session
         public const int MAX_SONG_TEXT     = 256;
         public const int MAX_REASON_LENGTH = 256;
 
-        /// <summary>Players one member may report. The game has no limit of its own; this is generous.</summary>
+        /// <summary>Players one member may report. <see cref="MAX_SESSION_PLAYERS"/> also limits the total.</summary>
         public const int MAX_PLAYERS_PER_MEMBER = 16;
+
+        /// <summary>
+        /// The most players in one song, for all members together. This is the limit of YARG itself: the
+        /// highway renderer has 32 slots (<c>HighwayCameraRendering.MAX_MATRICES</c>), and the profile menu
+        /// stops at 32 players. A host refuses a new joiner when the session has this many players.
+        /// </summary>
+        public const int MAX_SESSION_PLAYERS = 32;
 
         /// <summary>Cut <paramref name="text"/> to at most <paramref name="max"/> characters.</summary>
         public static string Clamp(string text, int max)

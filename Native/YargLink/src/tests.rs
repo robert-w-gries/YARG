@@ -8,6 +8,8 @@ use std::{
 };
 
 use super::*;
+// The crate's Result has a fixed error type; these helpers return status codes
+use std::result::Result;
 
 const LOCAL_CONFIG: &str = r#"{
     "relay": false,
@@ -15,7 +17,8 @@ const LOCAL_CONFIG: &str = r#"{
     "bind_addr": "127.0.0.1:0",
     "ticket_addrs": true,
     "connect_timeout_ms": 5000,
-    "log_filter": "warn,yarg_link=debug"
+    "log_filter": "warn,yarg_link=debug",
+    "accept": true
 }"#;
 
 struct Handle(*mut YlHandle);
@@ -31,8 +34,10 @@ impl Handle {
     }
 
     fn ticket(&self) -> String {
+        // A buffer of 0 bytes asks only for the length
         let mut len = 0usize;
-        assert_eq!(unsafe { yl_local_ticket(self.0, ptr::null_mut(), 0, &mut len) }, YL_OK);
+        let mut empty = [0u8; 0];
+        assert_eq!(unsafe { yl_local_ticket(self.0, empty.as_mut_ptr().cast(), 0, &mut len) }, YL_OK);
         let mut buf = vec![0u8; len];
         assert_eq!(unsafe { yl_local_ticket(self.0, buf.as_mut_ptr().cast(), len, &mut len) }, YL_OK);
         String::from_utf8(buf).unwrap()
@@ -65,7 +70,7 @@ impl Handle {
             let mut ev = YlEvent::default();
             match unsafe { yl_poll(self.0, &mut ev, buf.as_mut_ptr(), buf.len()) } {
                 1 if ev.kind == YL_EVENT_LOG => {
-                    println!("[log {}] {}", ev.level, String::from_utf8_lossy(&buf[..ev.len as usize]));
+                    println!("[log {}] {}", ev.log_level, String::from_utf8_lossy(&buf[..ev.len as usize]));
                 }
                 1 => return Some((ev, buf[..ev.len as usize].to_vec())),
                 0 if Instant::now() >= deadline => return None,
@@ -85,7 +90,7 @@ impl Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        unsafe { yl_destroy(self.0) };
+        yl_destroy(self.0);
     }
 }
 
@@ -161,7 +166,7 @@ fn unreliable_messages_arrive() {
     let (at_a, _) = pair(&a, &b);
 
     // Datagrams may be lost, even on localhost; keep sending until one arrives
-    let payload = vec![7u8; MAX_UNRELIABLE];
+    let payload = vec![7u8; MAX_UNRELIABLE_FRAME];
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         assert_eq!(a.send(at_a, 1, &payload), YL_OK);
@@ -173,7 +178,7 @@ fn unreliable_messages_arrive() {
         assert!(Instant::now() < deadline, "no datagram arrived");
     }
 
-    assert_eq!(a.send(at_a, 1, &vec![0u8; MAX_UNRELIABLE + 1]), YL_ERR_TOO_LARGE);
+    assert_eq!(a.send(at_a, 1, &vec![0u8; MAX_UNRELIABLE_FRAME + 1]), YL_ERR_TOO_LARGE);
     assert_eq!(a.send(at_a, 2, b"x"), YL_ERR_INVALID_ARG);
 }
 
@@ -199,7 +204,7 @@ fn local_disconnect_is_reported_on_both_sides() {
     let (a, b) = (Handle::new(LOCAL_CONFIG), Handle::new(LOCAL_CONFIG));
     let (at_a, at_b) = pair(&a, &b);
 
-    assert_eq!(unsafe { yl_disconnect(a.0, at_a) }, YL_OK);
+    assert_eq!(yl_disconnect(a.0, at_a), YL_OK);
     let (ev, reason) = a.expect(YL_EVENT_PEER_DISCONNECTED);
     assert_eq!(ev.peer, at_a);
     assert_eq!(reason, b"disconnected locally");
@@ -209,7 +214,7 @@ fn local_disconnect_is_reported_on_both_sides() {
     assert!(String::from_utf8_lossy(&reason).contains("closed by peer"), "{reason:?}");
 
     // Exactly once, and sends to it are dropped quietly
-    assert_eq!(unsafe { yl_disconnect(a.0, at_a) }, YL_OK);
+    assert_eq!(yl_disconnect(a.0, at_a), YL_OK);
     assert_eq!(a.send(at_a, 0, b"gone"), YL_OK);
     assert!(a.next(Duration::from_millis(200)).is_none());
     assert_eq!(a.stats(at_a).connected, 0);
@@ -245,7 +250,8 @@ fn failed_connect_is_reported() {
 impl Handle {
     fn peer_id(&self, peer: u32) -> Result<String, i32> {
         let mut len = 0usize;
-        let rc = unsafe { yl_peer_id(self.0, peer, ptr::null_mut(), 0, &mut len) };
+        let mut empty = [0u8; 0];
+        let rc = unsafe { yl_peer_id(self.0, peer, empty.as_mut_ptr().cast(), 0, &mut len) };
         if rc != YL_OK {
             assert_eq!(len, 0);
             return Err(rc);
@@ -290,7 +296,7 @@ fn peer_id_is_the_other_sides_endpoint_id() {
     assert_eq!(len, 64);
 
     assert_eq!(a.peer_id(9999), Err(YL_ERR_INVALID_ARG));
-    assert_eq!(unsafe { yl_disconnect(a.0, at_a) }, YL_OK);
+    assert_eq!(yl_disconnect(a.0, at_a), YL_OK);
     a.expect(YL_EVENT_PEER_DISCONNECTED);
     assert_eq!(a.peer_id(at_a), Err(YL_ERR_INVALID_ARG));
 }
@@ -304,14 +310,15 @@ fn every_handle_has_a_new_identity() {
     let second = Handle::new(LOCAL_CONFIG);
     assert_ne!(id_of(&second.ticket()), first_id);
 
-    // An old key_file setting is ignored rather than bringing the stable identity back
+    // An old key_file setting is refused, so it can't bring the stable identity back
     let dir = std::env::temp_dir().join(format!("yarg-link-test-key-{}", std::process::id()));
     let key = dir.join("secret.key");
     let config = LOCAL_CONFIG.replacen('{', &format!("{{\"key_file\": {:?},", key.to_str().unwrap()), 1);
-    let (x, y) = (Handle::new(&config), Handle::new(&config));
-    assert_ne!(x.ticket(), y.ticket());
+    let config = CString::new(config).unwrap();
+    let mut h = ptr::null_mut();
+    assert_eq!(unsafe { yl_create(config.as_ptr(), &mut h) }, YL_ERR_BAD_CONFIG);
+    assert!(h.is_null());
     assert!(!key.exists());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -321,7 +328,7 @@ fn logs_do_not_contain_full_endpoint_ids() {
     let (at_a, _) = pair(&a, &b);
     a.send(at_a, 0, b"hi");
     b.expect(YL_EVENT_MESSAGE);
-    unsafe { yl_disconnect(a.0, at_a) };
+    yl_disconnect(a.0, at_a);
     std::thread::sleep(Duration::from_millis(300));
 
     let ids = [id_of(&a.ticket()).to_string(), id_of(&b.ticket()).to_string()];
@@ -348,7 +355,73 @@ fn bad_input_is_rejected() {
     assert_eq!(unsafe { yl_create(filter.as_ptr(), &mut h) }, YL_ERR_BAD_CONFIG);
 
     assert_eq!(unsafe { yl_send(ptr::null_mut(), 1, 0, ptr::null(), 0) }, YL_ERR_INVALID_ARG);
-    unsafe { yl_destroy(ptr::null_mut()) };
+    yl_destroy(ptr::null_mut());
+}
+
+#[test]
+fn null_pointers_are_rejected_first() {
+    let a = Handle::new(LOCAL_CONFIG);
+    let (mut ev, mut len, mut stats, mut peer) = (YlEvent::default(), 7usize, YlStats::default(), 7u32);
+    let mut buf = [0u8; 16];
+
+    assert_eq!(unsafe { yl_poll(a.0, ptr::null_mut(), buf.as_mut_ptr(), buf.len()) }, YL_ERR_INVALID_ARG);
+    assert_eq!(unsafe { yl_poll(a.0, &mut ev, ptr::null_mut(), 0) }, YL_ERR_INVALID_ARG);
+    assert_eq!(unsafe { yl_local_ticket(a.0, ptr::null_mut(), 0, &mut len) }, YL_ERR_INVALID_ARG);
+    assert_eq!(unsafe { yl_local_ticket(a.0, buf.as_mut_ptr().cast(), buf.len(), ptr::null_mut()) }, YL_ERR_INVALID_ARG);
+    assert_eq!(unsafe { yl_last_error(ptr::null_mut(), 0, &mut len) }, YL_ERR_INVALID_ARG);
+    assert_eq!(unsafe { yl_peer_id(a.0, 1, ptr::null_mut(), 0, &mut len) }, YL_ERR_INVALID_ARG);
+    assert_eq!(unsafe { yl_peer_stats(a.0, 1, ptr::null_mut()) }, YL_ERR_INVALID_ARG);
+    assert_eq!(unsafe { yl_send(a.0, 1, 0, ptr::null(), 1) }, YL_ERR_INVALID_ARG);
+    let ticket = CString::new(a.ticket()).unwrap();
+    assert_eq!(unsafe { yl_connect(a.0, ptr::null(), &mut peer) }, YL_ERR_INVALID_ARG);
+    assert_eq!(unsafe { yl_connect(a.0, ticket.as_ptr(), ptr::null_mut()) }, YL_ERR_INVALID_ARG);
+
+    // The pointers are checked before the handle, so a bad handle with a null pointer is a pointer error
+    assert_eq!(unsafe { yl_peer_stats(ptr::null_mut(), 1, ptr::null_mut()) }, YL_ERR_INVALID_ARG);
+    assert!(last_error().contains("out pointer"), "{}", last_error());
+
+    // An unknown peer's ID fails with *len set to 0, and an empty message may have a null pointer
+    assert_eq!(unsafe { yl_peer_id(a.0, 99, buf.as_mut_ptr().cast(), buf.len(), &mut len) }, YL_ERR_INVALID_ARG);
+    assert_eq!(len, 0);
+    assert_eq!(unsafe { yl_send(a.0, 99, 0, ptr::null(), 0) }, YL_OK);
+    assert_eq!(unsafe { yl_peer_stats(a.0, 99, &mut stats) }, YL_OK);
+    assert_eq!(stats.connected, 0);
+}
+
+#[test]
+fn destroyed_and_made_up_handles_are_rejected() {
+    let a = Handle::new(LOCAL_CONFIG);
+    let raw = a.0;
+    drop(a);
+    let mut stats = YlStats::default();
+    assert_eq!(unsafe { yl_peer_stats(raw, 1, &mut stats) }, YL_ERR_CLOSED);
+    assert_eq!(yl_disconnect(raw, 1), YL_ERR_CLOSED);
+    // Destroying it again does nothing
+    yl_destroy(raw);
+
+    let made_up = ptr::without_provenance_mut(usize::MAX);
+    assert_eq!(unsafe { yl_peer_stats(made_up, 1, &mut stats) }, YL_ERR_INVALID_ARG);
+    yl_destroy(made_up);
+}
+
+#[test]
+fn accept_is_off_by_default() {
+    let without_accept = LOCAL_CONFIG.replace(",\n    \"accept\": true", "");
+    assert!(!without_accept.contains("accept"));
+    let host = Handle::new(&without_accept);
+    let other = Handle::new(LOCAL_CONFIG);
+    let peer = other.connect(&host.ticket()).unwrap();
+    let (ev, _) = other.expect(YL_EVENT_PEER_DISCONNECTED);
+    assert_eq!(ev.peer, peer);
+}
+
+#[test]
+fn ticket_without_addresses_needs_lookup() {
+    let a = Handle::new(LOCAL_CONFIG);
+    let b = Handle::new(LOCAL_CONFIG);
+    let bare = id_of(&b.ticket()).to_string();
+    assert_eq!(a.connect(&bare), Err(YL_ERR_BAD_TICKET));
+    assert!(last_error().contains("address_lookup"), "{}", last_error());
 }
 
 #[test]
@@ -390,7 +463,7 @@ fn messages_sent_right_before_disconnect_still_arrive() {
     let big = vec![9u8; 200_000];
     assert_eq!(a.send(at_a, 0, &big), YL_OK);
     assert_eq!(a.send(at_a, 0, b"bye"), YL_OK);
-    assert_eq!(unsafe { yl_disconnect(a.0, at_a) }, YL_OK);
+    assert_eq!(yl_disconnect(a.0, at_a), YL_OK);
     a.expect(YL_EVENT_PEER_DISCONNECTED);
     assert!(a.next(Duration::from_millis(100)).is_none(), "nothing after the disconnect");
 
@@ -481,7 +554,7 @@ fn oversize_frame_closes_the_connection() {
     host.expect(YL_EVENT_PEER_CONNECTED);
 
     // Only the header: the host has to give up on the length alone, before any payload arrives
-    raw.write(&((MAX_FRAME + 1) as u32).to_le_bytes());
+    raw.write(&((MAX_RELIABLE_FRAME + 1) as u32).to_le_bytes());
     let (_, reason) = host.expect(YL_EVENT_PEER_DISCONNECTED);
     let reason = String::from_utf8_lossy(&reason).into_owned();
     assert!(reason.contains("over the"), "{reason}");
@@ -504,9 +577,9 @@ fn oversize_hello_is_refused() {
 fn reliable_payload_limit() {
     let (a, b) = (Handle::new(LOCAL_CONFIG), Handle::new(LOCAL_CONFIG));
     let (at_a, _) = pair(&a, &b);
-    assert_eq!(a.send(at_a, 0, &vec![0u8; MAX_FRAME]), YL_ERR_TOO_LARGE);
+    assert_eq!(a.send(at_a, 0, &vec![0u8; MAX_RELIABLE_FRAME]), YL_ERR_TOO_LARGE);
 
-    let biggest = vec![5u8; MAX_FRAME - 1];
+    let biggest = vec![5u8; MAX_RELIABLE_FRAME - 1];
     assert_eq!(a.send(at_a, 0, &biggest), YL_OK);
     let (_, data) = b.expect(YL_EVENT_MESSAGE);
     assert_eq!(data.len(), biggest.len());
@@ -514,7 +587,7 @@ fn reliable_payload_limit() {
 
 #[test]
 fn join_only_handle_refuses_incoming() {
-    let joiner = Handle::new(&LOCAL_CONFIG.replace("\"relay\"", "\"accept\": false, \"relay\""));
+    let joiner = Handle::new(&LOCAL_CONFIG.replace("\"accept\": true", "\"accept\": false"));
     let other = Handle::new(LOCAL_CONFIG);
     let peer = other.connect(&joiner.ticket()).unwrap();
     let (ev, _) = other.expect(YL_EVENT_PEER_DISCONNECTED);
@@ -586,7 +659,7 @@ fn peer_that_stops_reading_is_disconnected() {
     let (ev, _) = host.expect(YL_EVENT_PEER_CONNECTED);
 
     // The raw peer never reads, so flow control holds the host's writer and frames pile up
-    let big = vec![0u8; MAX_FRAME - 1];
+    let big = vec![0u8; MAX_RELIABLE_FRAME - 1];
     for _ in 0..64 {
         assert_eq!(host.send(ev.peer, 0, &big), YL_OK);
     }
@@ -601,7 +674,7 @@ fn peer_that_stops_reading_is_disconnected() {
 #[test]
 #[ignore]
 fn internet_by_endpoint_id() {
-    let config = r#"{"connect_timeout_ms": 30000, "log_filter": "warn,yarg_link=debug"}"#;
+    let config = r#"{"connect_timeout_ms": 30000, "log_filter": "warn,yarg_link=debug", "accept": true}"#;
     let (a, b) = (Handle::new(config), Handle::new(config));
     let ticket = b.ticket();
     assert!(!ticket.contains('@'), "bare endpoint ID: {ticket}");

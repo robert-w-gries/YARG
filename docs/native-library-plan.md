@@ -76,6 +76,16 @@ Both are tradeoffs against polish, and the MVP write-up should say so.
   (`EngineContainer.PlayerHasFailed`) are public in Core. Showing the host's meter value on a client took a
   small change in YARG's `FailMeter`, not in Core.
 
+### Before sharing with maintainers
+
+- [ ] **Finish reviewing all code.** Still to do: the rest of the node code (after the split into
+  `src/node/`) and all of `LinkController`.
+- [ ] **Direct connections only during gameplay**, so synced songs never depend on the public n0 relays.
+  A relayed connection can still join a session and use the lobby, but can't join a synced song. Long
+  term this will likely flip: a privacy option that requires relayed connections, through a YARG-owned
+  relay server (see [Relays and address lookup](#relays-and-address-lookup)).
+- [ ] TODO
+
 ## Why not keep the sidecar
 
 | Problem | Effect on a polished product |
@@ -261,7 +271,7 @@ public release, run our own relay and keep n0's public relays as a fallback.
 
 ### Where n0 infrastructure is used today
 
-- **Relays:** `RelayMode::Default` (`Native/YargLink/src/node.rs`) uses n0's public relays. A relay
+- **Relays:** `RelayMode::Default` (`Native/YargLink/src/node/mod.rs`) uses n0's public relays. A relay
   only carries traffic when hole punching fails (`PATH_RELAY` in the stats). Relayed traffic stays
   end-to-end encrypted.
 - **Address lookup:** `presets::N0` also uses n0's DNS/pkarr service, which is how a bare endpoint ID
@@ -348,7 +358,7 @@ All of the settings below exist in `iroh-relay` 1.4.1.
    `IROH_RELAY_ACCESS_TOKEN` environment variable). Client: `RelayConfig::with_auth_token(...)` on our
    entry in the `RelayMode::Custom` map. It only stops casual use, because anyone can read it. Make it
    a build or config value next to the relay URL so forks can set their own, and change it between
-   releases if it gets copied. Not implemented yet: `node.rs` only uses `RelayMode::Default` or
+   releases if it gets copied. Not implemented yet: `node/mod.rs` only uses `RelayMode::Default` or
    `Disabled`.
 3. **HTTP access check (only if misuse shows up).** `access.http = { url = "...", bearer_token = "..." }`
    asks our own service about each endpoint ID that connects. A `200` with `true` lets it in. That
@@ -686,6 +696,17 @@ Phase 5 notes (2026-11-17):
   from `dev` is back.
 - **Not yet tested:** Discord invites between two machines and accounts, and the Discord-started launch
   in a release build (the Editor skips registering the command).
+- **ABI 4 (second review of the library).** A `yl_handle *` is now a number in a registry, not an
+  address, so a wrong or destroyed handle gives an error (`YL_ERR_CLOSED` for a destroyed one), and
+  `yl_destroy` waits for calls on other threads. Pointer arguments are checked first, and output
+  buffers may no longer be NULL (also with `cap` 0). `yl_event.level` is now `log_level`. The config is
+  strict: unknown members (also the old `key_file`) and values out of range give `YL_ERR_BAD_CONFIG`,
+  `"accept"` is off by default, and `address_lookup` off needs `ticket_addrs` on. Tickets have a length
+  and address limit. `node.rs` is split into `src/node/`. The wire format and ALPN did not change.
+  The committed plugins are ABI 3 builds, and the game refuses them until they are built again.
+- **Session player limit.** A session has at most 32 players (`LinkLimits.MAX_SESSION_PLAYERS`, the
+  number of highway slots). A host refuses a new joiner when the session has 32 players, and a game
+  adds no highway after the 32nd. The 8-joiner limit (`MaxMembers`) stays, for the network.
 
 ## Future network features
 
