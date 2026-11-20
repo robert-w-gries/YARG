@@ -191,7 +191,7 @@ fn stats_report_direct_path_and_rtt() {
 
     let stats = a.stats(at_a);
     assert_eq!(stats.connected, 1);
-    assert_eq!(stats.path, node::PATH_DIRECT);
+    assert_eq!(stats.path, YL_PATH_DIRECT);
     assert!(stats.rtt_us >= 0);
     assert!(stats.bytes_sent > 0);
 
@@ -562,6 +562,34 @@ fn oversize_frame_closes_the_connection() {
 }
 
 #[test]
+fn unknown_frame_kind_closes_the_connection() {
+    let host = Handle::new(LOCAL_CONFIG);
+    let mut raw = RawPeer::connect(&host.ticket());
+    raw.hello();
+    host.expect(YL_EVENT_PEER_CONNECTED);
+
+    // Kind 7 is not a kind of this wire format. A peer with the same ALPN never sends it.
+    raw.write(&[1, 0, 0, 0, 7]);
+    let (_, reason) = host.expect(YL_EVENT_PEER_DISCONNECTED);
+    let reason = String::from_utf8_lossy(&reason).into_owned();
+    assert!(reason.contains("unknown frame kind 7"), "{reason}");
+    assert!(raw.closed_within(Duration::from_secs(5)));
+}
+
+#[test]
+fn second_hello_closes_the_connection() {
+    let host = Handle::new(LOCAL_CONFIG);
+    let mut raw = RawPeer::connect(&host.ticket());
+    raw.hello();
+    host.expect(YL_EVENT_PEER_CONNECTED);
+
+    raw.hello();
+    let (_, reason) = host.expect(YL_EVENT_PEER_DISCONNECTED);
+    let reason = String::from_utf8_lossy(&reason).into_owned();
+    assert!(reason.contains("second hello"), "{reason}");
+}
+
+#[test]
 fn oversize_hello_is_refused() {
     let host = Handle::new(LOCAL_CONFIG);
     let mut raw = RawPeer::connect(&host.ticket());
@@ -692,4 +720,136 @@ fn internet_by_endpoint_id() {
 
     let stats = a.stats(at_a);
     println!("path {} rtt {} us", stats.path, stats.rtt_us);
+}
+
+/// The value of a `#define` in `yarg_link.h`: an integer, or a simple expression of integers with
+/// `+`, `-`, `*` and parentheses (for example `(1024 * 1024 - 1)`).
+fn header_value(text: &str) -> i64 {
+    fn sum(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> i64 {
+        let mut value = product(tokens);
+        while let Some(op) = tokens.peek().cloned() {
+            match op.as_str() {
+                "+" => {
+                    tokens.next();
+                    value += product(tokens);
+                }
+                "-" => {
+                    tokens.next();
+                    value -= product(tokens);
+                }
+                _ => break,
+            }
+        }
+        value
+    }
+    fn product(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> i64 {
+        let mut value = atom(tokens);
+        while tokens.peek().map(String::as_str) == Some("*") {
+            tokens.next();
+            value *= atom(tokens);
+        }
+        value
+    }
+    fn atom(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> i64 {
+        match tokens.next().as_deref() {
+            Some("(") => {
+                let value = sum(tokens);
+                assert_eq!(tokens.next().as_deref(), Some(")"));
+                value
+            }
+            Some("-") => -atom(tokens),
+            Some(number) => number.parse().unwrap_or_else(|_| panic!("not a number: {number}")),
+            None => panic!("expression ends early"),
+        }
+    }
+
+    let mut tokens = Vec::new();
+    let mut number = String::new();
+    for c in text.chars() {
+        if c.is_ascii_digit() {
+            number.push(c);
+            continue;
+        }
+        if !number.is_empty() {
+            tokens.push(std::mem::take(&mut number));
+        }
+        if !c.is_whitespace() {
+            tokens.push(c.to_string());
+        }
+    }
+    if !number.is_empty() {
+        tokens.push(number);
+    }
+    let mut tokens = tokens.into_iter().peekable();
+    let value = sum(&mut tokens);
+    assert!(tokens.next().is_none(), "unexpected text in {text:?}");
+    value
+}
+
+/// Each `#define YL_...` in `yarg_link.h` has the same value as the Rust constant of the same name.
+/// The header must have its own copy of the values, because C cannot read Rust; this test makes
+/// sure that the copies agree. `Tests/YARG.Link.Tests/HeaderConstantsTests.cs` does the same check
+/// for the C# copies.
+#[test]
+fn header_constants_match() {
+    let rust: &[(&str, i64)] = &[
+        ("YL_ABI_VERSION", YL_ABI_VERSION.into()),
+        ("YL_MAX_UNRELIABLE", YL_MAX_UNRELIABLE as i64),
+        ("YL_MAX_RELIABLE", YL_MAX_RELIABLE as i64),
+        ("YL_OK", YL_OK.into()),
+        ("YL_ERR_INVALID_ARG", YL_ERR_INVALID_ARG.into()),
+        ("YL_ERR_BAD_CONFIG", YL_ERR_BAD_CONFIG.into()),
+        ("YL_ERR_BIND", YL_ERR_BIND.into()),
+        ("YL_ERR_BAD_TICKET", YL_ERR_BAD_TICKET.into()),
+        ("YL_ERR_BUFFER_TOO_SMALL", YL_ERR_BUFFER_TOO_SMALL.into()),
+        ("YL_ERR_TOO_LARGE", YL_ERR_TOO_LARGE.into()),
+        ("YL_ERR_CLOSED", YL_ERR_CLOSED.into()),
+        ("YL_ERR_PANIC", YL_ERR_PANIC.into()),
+        ("YL_ERR_INTERNAL", YL_ERR_INTERNAL.into()),
+        ("YL_CHANNEL_RELIABLE", YL_CHANNEL_RELIABLE.into()),
+        ("YL_CHANNEL_UNRELIABLE", YL_CHANNEL_UNRELIABLE.into()),
+        ("YL_EVENT_PEER_CONNECTED", YL_EVENT_PEER_CONNECTED.into()),
+        ("YL_EVENT_PEER_DISCONNECTED", YL_EVENT_PEER_DISCONNECTED.into()),
+        ("YL_EVENT_MESSAGE", YL_EVENT_MESSAGE.into()),
+        ("YL_EVENT_ERROR", YL_EVENT_ERROR.into()),
+        ("YL_EVENT_LOG", YL_EVENT_LOG.into()),
+        ("YL_LOG_ERROR", YL_LOG_ERROR.into()),
+        ("YL_LOG_WARN", YL_LOG_WARN.into()),
+        ("YL_LOG_INFO", YL_LOG_INFO.into()),
+        ("YL_LOG_DEBUG", YL_LOG_DEBUG.into()),
+        ("YL_LOG_TRACE", YL_LOG_TRACE.into()),
+        ("YL_PATH_UNKNOWN", YL_PATH_UNKNOWN.into()),
+        ("YL_PATH_DIRECT", YL_PATH_DIRECT.into()),
+        ("YL_PATH_RELAY", YL_PATH_RELAY.into()),
+    ];
+
+    let header = include_str!("../include/yarg_link.h");
+    let mut defines = std::collections::BTreeMap::new();
+    for line in header.lines() {
+        let Some(rest) = line.trim().strip_prefix("#define ") else { continue };
+        let (name, value) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        // Only the value constants: not the include guard (YARG_LINK_H) or YL_API
+        if !name.starts_with("YL_") || name == "YL_API" {
+            continue;
+        }
+        let value = value.split("/*").next().unwrap().trim();
+        defines.insert(name, header_value(value));
+    }
+
+    for (name, value) in rust {
+        assert_eq!(defines.remove(name), Some(*value), "{name} in yarg_link.h");
+    }
+    assert!(defines.is_empty(), "yarg_link.h has constants that this test doesn't check: {defines:?}");
+}
+
+#[test]
+fn a_poisoned_lock_still_locks() {
+    let m = std::sync::Mutex::new(1);
+    let _ = std::panic::catch_unwind(|| {
+        let _held = m.lock().unwrap();
+        panic!("poison the lock");
+    });
+    assert!(m.is_poisoned());
+    *lock_ignoring_poison(&m) += 1;
+    assert_eq!(*lock_ignoring_poison(&m), 2);
 }

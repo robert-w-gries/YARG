@@ -27,7 +27,10 @@
  *     text functions use the same rule, so there is only one rule.
  *   - The length is always given, so the caller does not need a terminator to find the end.
  *   - The C# caller reads the bytes with their length (Encoding.UTF8.GetString(buf, 0, len)).
- * To use an output as a C string, copy len bytes and add the zero byte yourself.
+ * The caller has both parts of the output: the pointer is its own buf, and the length is *len. The
+ * function does not return a pointer. The text is in buf, from buf[0], and it is cut short when
+ * *len > cap. To make a C string, give a buffer that is 1 byte larger than cap, and after the call
+ * write 0 at buf[n], where n is the smaller of *len and cap.
  * cap is an argument, not a constant, because the length of a ticket or an event is not fixed: a
  * ticket can have addresses, and a message can be up to YL_MAX_RELIABLE bytes. An endpoint ID
  * (yl_peer_id) is 64 bytes now, but the function does not promise that length.
@@ -239,7 +242,11 @@ YL_API int yl_poll(yl_handle *h, yl_event *ev, uint8_t *buf, size_t cap);
  */
 YL_API int yl_peer_id(yl_handle *h, uint32_t peer, char *buf, size_t cap, size_t *len);
 
-/* Statistics for a peer. Unknown or disconnected peers report connected = 0. out must not be NULL. */
+/*
+ * Statistics for a peer. out must not be NULL. A peer that is not connected now (unknown, still
+ * connecting, or disconnected) gives YL_OK with connected = 0, path = YL_PATH_UNKNOWN, rtt_us = -1
+ * and byte counts of 0. It is not an error, because a peer can disconnect at any moment.
+ */
 YL_API int yl_peer_stats(yl_handle *h, uint32_t peer, yl_stats *out);
 
 #ifdef __cplusplus

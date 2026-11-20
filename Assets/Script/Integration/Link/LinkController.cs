@@ -449,6 +449,7 @@ namespace YARG.Integration.Link
                     // A joiner only talks to its host, so nobody else gets to connect to it
                     Accept = role == LinkRole.Host,
                     MaxPeers = TransportMaxPeers,
+                    LogFilter = NativeLogFilter(YargLogger.MinimumLogLevel),
                 });
                 transport.Log = LogNative;
                 problem = null;
@@ -489,6 +490,20 @@ namespace YARG.Integration.Link
                 }
             }
         }
+
+        /// <summary>
+        /// The library's <c>log_filter</c> for the game's minimum log level. The library drops each line that its
+        /// filter does not select, before the game sees it. Its default, <c>"warn,yarg_link=info"</c>, drops all
+        /// debug lines. Thus when the player selects Debug or Trace in the settings, ask the library for its own
+        /// lines at that level too. iroh's lines stay at "warn": at debug level, iroh writes many lines each second.
+        /// The filter is read when the transport is made, so a change of the setting applies from the next session.
+        /// </summary>
+        private static string NativeLogFilter(LogLevel minimum) => minimum switch
+        {
+            LogLevel.Trace => "warn,yarg_link=trace",
+            LogLevel.Debug => "warn,yarg_link=debug",
+            _              => null,
+        };
 
         private static void LogNative(NativeLogLevel level, string message)
         {

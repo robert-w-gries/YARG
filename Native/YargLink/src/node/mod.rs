@@ -1,11 +1,13 @@
 //! One handle's networking: an iroh endpoint, its tokio runtime, its peers and its event queue.
 //!
 //! - `mod.rs` (this file): `Node`, which the exported functions call.
-//! - `shared.rs`: the event queue and the peers, with the peer state machine.
+//! - `shared.rs`: the event queue and the list of peers, with the peer state machine.
+//! - `peer.rs`: one peer, and the operations that need only the peer.
 //! - `conn.rs`: the tasks of each connection.
 //! - `wire.rs`: the wire format.
 
 mod conn;
+mod peer;
 mod shared;
 mod wire;
 
@@ -16,18 +18,20 @@ use iroh::{
     Endpoint, RelayMode, SecretKey,
     endpoint::{Builder, presets},
 };
-use tokio::{runtime::Runtime, sync::mpsc::error::TrySendError};
+use tokio::runtime::Runtime;
 use tracing::{Dispatch, debug, info};
 
 pub use self::{
+    peer::Stats,
     shared::{Event, Shared},
     wire::{ALPN, MAX_RELIABLE_FRAME, MAX_UNRELIABLE_FRAME},
 };
 use self::{
-    shared::{Peer, Write},
-    wire::{KIND_DATA, encode_frame},
+    peer::{CloseReason, Peer, Queued},
+    wire::{FrameKind, encode_frame},
 };
 use crate::{
+    YL_CHANNEL_RELIABLE, YL_CHANNEL_UNRELIABLE,
     config::Config,
     error::{Result, YlError},
     log, ticket,
@@ -40,23 +44,8 @@ const INCOMING_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `Drop` waits for the peers' goodbyes, and then for the endpoint to close.
 const DROP_GOODBYE_TIMEOUT: Duration = Duration::from_millis(1500);
 const DROP_ENDPOINT_TIMEOUT: Duration = Duration::from_millis(500);
-
-pub const CHANNEL_RELIABLE: u8 = 0;
-pub const CHANNEL_UNRELIABLE: u8 = 1;
-
-#[allow(dead_code)] // the default; kept to mirror YL_PATH_UNKNOWN
-pub const PATH_UNKNOWN: u32 = 0;
-pub const PATH_DIRECT: u32 = 1;
-pub const PATH_RELAY: u32 = 2;
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Stats {
-    pub connected: bool,
-    pub path: u32,
-    pub rtt: Option<Duration>,
-    pub bytes_sent: u64,
-    pub bytes_received: u64,
-}
+/// How long `Drop` waits for the runtime's tasks to stop, after the endpoint is closed.
+const DROP_RUNTIME_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// The networking of one handle (`yl_handle`). There is one `Node` for each `yl_create`.
 ///
@@ -138,7 +127,7 @@ impl Node {
     /// - the ALPN list (refer to `wire::ALPN`): the endpoint accepts only connections for this
     ///   protocol;
     /// - the relays: n0's public relays, or none;
-    /// - the sockets: iroh's default sockets, or only `bind_addr`.
+    /// - the sockets: iroh's default sockets (no `bind_addr`), or only `bind_addr`.
     async fn bind(config: &Config, secret: SecretKey) -> Result<Endpoint> {
         // The presets are different types, so each branch makes its own builder
         let builder = if config.address_lookup {
@@ -152,26 +141,41 @@ impl Node {
             .relay_mode(if config.relay { RelayMode::Default } else { RelayMode::Disabled });
 
         if let Some(addr) = config.bind_addr {
-            builder = bind_only(builder, addr)?;
+            builder = replace_default_sockets(builder, addr)?;
         }
 
         builder.bind().await.map_err(|e| YlError::bind(format!("couldn't open endpoint: {e}")))
     }
 
+    /// The runtime of this node.
+    ///
+    /// The runtime is an `Option` only so that `Drop` can take it and shut it down. Thus the panic
+    /// below can occur only if code calls this function after `Drop` took the runtime. That is not
+    /// possible from an exported function: `yl_destroy` runs `Drop` only when no other call has the
+    /// node (refer to `yl_destroy`), and the runtime's tasks do not call `Node`'s methods. If you
+    /// see this message (`yl_last_error` after `YL_ERR_PANIC`, or a tokio task panic in the log),
+    /// look for a new call of a `Node` method in `Drop`, or in a task that keeps the `Node`.
     fn runtime(&self) -> &Runtime {
-        self.runtime.as_ref().expect("only Drop removes the runtime")
+        self.runtime.as_ref().expect("Node::runtime was called after Drop of Node took the runtime")
     }
 
     pub fn shared(&self) -> &Shared {
         &self.shared
     }
 
+    /// The ticket of this node: the text that another game gives to `yl_connect` to connect to
+    /// this one (`yl_local_ticket`).
+    ///
+    /// The ticket is this endpoint's ID. With `ticket_addrs`, it also has the direct addresses and
+    /// the relay URL that the endpoint knows now (refer to `ticket::format`). Thus the ticket can
+    /// change when the network changes, for example when the endpoint finds its public address.
+    /// Call this function each time a ticket is necessary: do not keep an old one.
     pub fn local_ticket(&self) -> String {
         ticket::format(&self.endpoint.addr(), self.ticket_addrs)
     }
 
     /// Start a connect to `ticket`, and return the new peer's number at once. The peer's task
-    /// queues `Connected` or `Disconnected` later.
+    /// (`conn::run_outgoing`) queues `Connected` or `Disconnected` later.
     pub fn connect(&self, ticket: &str) -> Result<u32> {
         let addr = ticket::parse(ticket).map_err(YlError::bad_ticket)?;
         if addr.id == self.endpoint.id() {
@@ -183,41 +187,49 @@ impl Node {
             ));
         }
 
-        let (peer, rx) = self.shared.new_peer();
+        // new_peer gives None only after Drop of Node started, and no exported function can call
+        // this method then (refer to `runtime`)
+        let Some((peer, rx)) = self.shared.new_peer() else {
+            return Err(YlError::closed("the handle is closing"));
+        };
         let id = peer.id;
-        let (endpoint, shared, timeout) = (self.endpoint.clone(), self.shared.clone(), self.connect_timeout);
-        self.runtime().spawn(async move {
-            let _done = peer.done.clone().drop_guard();
-            let established = tokio::select! {
-                _ = peer.cancel.cancelled() => return,
-                r = conn::connect_outgoing(&endpoint, addr, timeout) => r,
-            };
-            match established {
-                Ok((conn, send, recv)) => conn::run_peer(shared, peer, conn, send, recv, rx).await,
-                Err(reason) => shared.close_peer(&peer, reason, false),
-            }
-        });
+        let task = conn::run_outgoing(self.shared.clone(), peer, rx, self.endpoint.clone(), addr, self.connect_timeout);
+        self.runtime().spawn(task);
         Ok(id)
     }
 
     pub fn disconnect(&self, id: u32) {
-        let _guard = self.runtime().enter();
         if let Some(peer) = self.shared.peer(id) {
-            self.shared.close_peer(&peer, "disconnected locally".into(), true);
+            self.close_peer(&peer, CloseReason::Local);
         }
     }
 
+    /// Close a peer from an exported function. This is `Shared::close_peer` in the runtime's
+    /// context. The exported functions run on the game's thread, which is not a runtime thread,
+    /// and iroh can use the runtime (its timers) when a connection closes. The runtime's tasks
+    /// call `Shared::close_peer` directly, because they are in the context already.
+    fn close_peer(&self, peer: &Peer, reason: CloseReason) {
+        let _guard = self.runtime().enter();
+        self.shared.close_peer(peer, reason);
+    }
+
     /// Send `data` to peer `id` on `channel`. Refer to `send_reliable` and `send_unreliable`.
+    ///
+    /// The result is an error only when the arguments are not correct: an unknown channel, or a
+    /// message that is too large. A message to a peer that is not Ready (unknown, still connecting
+    /// or closed) is dropped, and the result is `Ok`. The header promises this (`yl_send`), for
+    /// this reason: a peer can disconnect at any moment, also between the game's last `yl_poll`
+    /// and this call, so the game cannot prevent such a send. The game learns of the disconnect
+    /// from its `YL_EVENT_PEER_DISCONNECTED` event, not from `yl_send`.
     pub fn send(&self, id: u32, channel: u8, data: &[u8]) -> Result<()> {
         match channel {
-            CHANNEL_RELIABLE => self.send_reliable(id, data),
-            CHANNEL_UNRELIABLE => self.send_unreliable(id, data),
+            YL_CHANNEL_RELIABLE => self.send_reliable(id, data),
+            YL_CHANNEL_UNRELIABLE => self.send_unreliable(id, data),
             _ => Err(YlError::invalid_arg(format!("unknown channel {channel}"))),
         }
     }
 
-    /// Queue a reliable message for the peer's writer task. If too much waits to go out to the
-    /// peer already, the peer is disconnected.
+    /// Queue a reliable message for the peer's writer task.
     fn send_reliable(&self, id: u32, data: &[u8]) -> Result<()> {
         if data.len() + 1 > MAX_RELIABLE_FRAME {
             return Err(YlError::too_large(format!(
@@ -226,31 +238,19 @@ impl Node {
                 MAX_RELIABLE_FRAME - 1
             )));
         }
-        let Some(peer) = self.ready_peer(id) else { return Ok(()) };
-
-        let frame = encode_frame(KIND_DATA, data);
-        // At most MAX_RELIABLE_FRAME + 4 bytes, which fits in a u32
-        let bytes = frame.len() as u32;
-        let Ok(permit) = peer.outgoing_bytes.clone().try_acquire_many_owned(bytes) else {
-            self.close_slow_peer(&peer);
-            return Ok(());
-        };
-        match peer.writer.try_send(Write::Frame(frame, permit)) {
-            Ok(()) => {}
-            // The peer's task ended; its disconnect is on the way
-            Err(TrySendError::Closed(_)) => {}
-            Err(TrySendError::Full(_)) => self.close_slow_peer(&peer),
+        if let Some(peer) = self.shared.ready_peer(id) {
+            match peer.queue_frame(encode_frame(FrameKind::Data, data)) {
+                Queued::Yes => {}
+                // The peer's task ended; its disconnect is on the way
+                Queued::WriterEnded => {}
+                Queued::Full => self.close_peer(&peer, CloseReason::SlowReader),
+            }
         }
         Ok(())
     }
 
-    /// Disconnect a peer that has too much waiting to go out to it: it stopped reading.
-    fn close_slow_peer(&self, peer: &Peer) {
-        let _guard = self.runtime().enter();
-        self.shared.close_peer(peer, "peer stopped reading what we sent".into(), false);
-    }
-
-    /// Send an unreliable message as one QUIC datagram. If the path can't carry it now, it is dropped.
+    /// Send an unreliable message as one QUIC datagram. If the path can't carry it now, it is
+    /// dropped: unreliable messages can be lost.
     fn send_unreliable(&self, id: u32, data: &[u8]) -> Result<()> {
         if data.len() > MAX_UNRELIABLE_FRAME {
             return Err(YlError::too_large(format!(
@@ -258,62 +258,40 @@ impl Node {
                 data.len()
             )));
         }
-        let Some(peer) = self.ready_peer(id) else { return Ok(()) };
-        let Some(conn) = peer.conn.get() else { return Ok(()) };
-
-        let _guard = self.runtime().enter();
-        if let Err(e) = conn.send_datagram(Bytes::copy_from_slice(data)) {
-            // Unreliable anyway; the read side notices if the connection is gone
-            debug!(peer = id, "datagram dropped: {e}");
+        if let Some(conn) = self.shared.ready_peer(id).and_then(|peer| peer.conn.get().cloned()) {
+            let _guard = self.runtime().enter();
+            if let Err(e) = conn.send_datagram(Bytes::copy_from_slice(data)) {
+                // The read side notices if the connection is gone
+                debug!(peer = id, "datagram dropped: {e}");
+            }
         }
         Ok(())
     }
 
-    /// The peer to send to. `None` if the peer is unknown or not Ready: the message is then dropped,
-    /// and the game learns of the disconnect from `yl_poll`.
-    fn ready_peer(&self, id: u32) -> Option<Arc<Peer>> {
-        self.shared.peer(id).filter(|peer| peer.is_ready())
-    }
-
-    /// The peer's endpoint ID, once its connection is up. Authenticated by the handshake, so a
-    /// peer can't claim another's ID (though it can make a new one whenever it likes).
+    /// The peer's endpoint ID, once its connection is up. Refer to `Peer::endpoint_id`.
     pub fn peer_id(&self, id: u32) -> Option<String> {
-        let peer = self.shared.peer(id)?;
-        peer.conn.get().map(|conn| conn.remote_id().to_string())
+        self.shared.peer(id)?.endpoint_id()
     }
 
-    /// The statistics of peer `id`. An unknown peer, or a peer that is not Ready, gives
-    /// `connected: false` and zeros. The byte counts are of all UDP packets of the connection, with
-    /// QUIC's own acknowledgements and keepalives. The path and round-trip time are of the path
-    /// that QUIC uses now.
-    pub fn stats(&self, id: u32) -> Stats {
-        let Some(peer) = self.shared.peer(id) else { return Stats::default() };
-        if !peer.is_ready() {
-            return Stats::default();
-        }
-        let Some(conn) = peer.conn.get() else { return Stats::default() };
-
+    /// The statistics of peer `id`, or `None` if the peer is not connected now: it is unknown,
+    /// still connecting, or closed. `yl_peer_stats` gives `connected = 0` for `None`.
+    ///
+    /// The byte counts are of all UDP packets of the connection, with QUIC's own acknowledgements
+    /// and keepalives. The path and round-trip time are of the path that QUIC uses now.
+    pub fn stats(&self, id: u32) -> Option<Stats> {
+        let peer = self.shared.peer(id)?;
         let _guard = self.runtime().enter();
-        let quic = conn.stats();
-        let mut stats = Stats {
-            connected: true,
-            bytes_sent: quic.udp_tx.bytes,
-            bytes_received: quic.udp_rx.bytes,
-            ..Stats::default()
-        };
-        if let Some(path) = conn.paths().iter().find(|p| p.is_selected()) {
-            stats.rtt = Some(path.rtt());
-            stats.path = if path.is_relay() { PATH_RELAY } else { PATH_DIRECT };
-        }
-        stats
+        peer.stats()
     }
 }
 
-/// Make the endpoint use only one socket, at `addr`. Without this, iroh opens its default sockets:
-/// one IPv4 and one IPv6 socket, on all network interfaces, each on a random free port. The
-/// default sockets must be removed first (`clear_ip_transports`), else the endpoint keeps them as
+/// Make the endpoint use only one socket, at `addr`, in place of iroh's default sockets.
+///
+/// Without this, iroh opens its default sockets: one IPv4 and one IPv6 socket, on all network
+/// interfaces, each on a random free port. `bind_addr` adds a socket and does not remove the
+/// default sockets. Thus `clear_ip_transports` removes them first, else the endpoint keeps them as
 /// well as `addr`.
-fn bind_only(builder: Builder, addr: SocketAddr) -> Result<Builder> {
+fn replace_default_sockets(builder: Builder, addr: SocketAddr) -> Result<Builder> {
     builder
         .clear_ip_transports()
         .bind_addr(addr)
@@ -321,18 +299,25 @@ fn bind_only(builder: Builder, addr: SocketAddr) -> Result<Builder> {
 }
 
 impl Drop for Node {
+    /// Close the handle. The steps, in this order:
+    /// 1. `close_all`: set `closing`, and close each peer gracefully. A graceful close does not
+    ///    cut the connection. It puts `Write::Finish` in the peer's writer channel, behind the
+    ///    reliable messages that the game sent before `yl_destroy` (its goodbye). The channel is
+    ///    first in, first out, and one task writes it, so the goodbye goes out before the finish.
+    ///    A peer that is not Ready has no goodbye, and closes at once.
+    /// 2. Wait, at most `DROP_GOODBYE_TIMEOUT`, until each peer's task ends. A task ends when the
+    ///    peer has read everything and closed the connection (or after `FINISH_TIMEOUT`).
+    /// 3. Close the endpoint, at most `DROP_ENDPOINT_TIMEOUT`. This closes each connection that
+    ///    is still open.
+    /// 4. Stop the runtime, at most `DROP_RUNTIME_TIMEOUT`, and clear the event queue.
     fn drop(&mut self) {
-        self.shared.set_closing();
         let Some(runtime) = self.runtime.take() else { return };
 
         tracing::dispatcher::with_default(&self.dispatch, || {
-            let peers = self.shared.take_peers();
-            {
+            let peers = {
                 let _guard = runtime.enter();
-                for peer in &peers {
-                    self.shared.close_peer(peer, String::new(), true);
-                }
-            }
+                self.shared.close_all()
+            };
 
             // Let the goodbyes go out, so friends see us leave right away (and why)
             let endpoint = self.endpoint.clone();
@@ -345,7 +330,7 @@ impl Drop for Node {
                 .await;
                 let _ = tokio::time::timeout(DROP_ENDPOINT_TIMEOUT, endpoint.close()).await;
             });
-            runtime.shutdown_timeout(Duration::from_millis(500));
+            runtime.shutdown_timeout(DROP_RUNTIME_TIMEOUT);
         });
 
         self.shared.clear_events();
