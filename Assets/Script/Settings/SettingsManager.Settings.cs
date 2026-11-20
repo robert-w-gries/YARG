@@ -882,6 +882,8 @@ namespace YARG.Settings
             public ToggleSetting DataStreamEnable { get; } = new(false, DataStreamEnableCallback );
             public ToggleSetting LinkEnable { get; } = new(false);
             public ToggleSetting LinkDebugScoreboard { get; } = new(false);
+            public ToggleSetting LinkDebugScoreBox { get; } = new(false);
+            public ToggleSetting LinkDebugConnections { get; } = new(false);
             public DropdownSetting<BandComboType> BandComboTypeSetting { get; } = new(BandComboType.Off)
             {
                 BandComboType.Off,

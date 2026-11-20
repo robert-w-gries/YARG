@@ -63,6 +63,9 @@ namespace YARG.Integration.Link
             /// <summary>Joiner: the host's meter, once it has said.</summary>
             public float? HostHappiness;
 
+            /// <summary>Joiner: when the host's last <c>meter</c> message arrived, for the debug overlay.</summary>
+            public double LastMeterAt = double.NegativeInfinity;
+
             /// <summary>
             /// Joiner: each player's value on the host's meter (member ID, player index), as of its last
             /// <c>meter</c> message. A player who isn't in it doesn't count toward the host's meter.
@@ -222,6 +225,7 @@ namespace YARG.Integration.Link
             {
                 case KIND_METER:
                     _band.HostHappiness = SaneHappiness((float?) data["happiness"]);
+                    _band.LastMeterAt = Now;
                     if (data["players"] is JObject players)
                     {
                         ReadHostPlayers(players);
