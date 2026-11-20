@@ -108,6 +108,106 @@ The library has no rate limit of its own. The limits are in these places:
   clients of a relay. `docs/native-library-plan.md` ("Relays and address lookup") has the plan for
   our own relay, with its limits and access token.
 
+## Public relays: risks
+
+When `"relay"` is `true` (the default), the library uses the public relays of n0. A relay sends
+the traffic only when hole punching is not possible. Then the stats show `PATH_RELAY`, and the
+lobby shows "Relay". The relay cannot read the packets, because they are encrypted from end to
+end. The MVP decision is in `docs/native-library-plan.md` ("Relays and address lookup"). The
+public relays are for development and tests. A release must use our own relay first.
+
+### Timing
+
+- **Clock offset.** `ClockOffsetEstimator` uses half of the round trip as the latency in one
+  direction. On a relayed path, each packet goes through the home relay of the game that receives
+  it. Two games can have different home relays. Then the two directions have different latencies.
+  This causes a constant error in the offset, and the estimator cannot find this error. The synced
+  start and the clock correction have the same error.
+- **Jitter.** A relay sends the packets on TCP (HTTPS or WebSocket). If one packet is lost, the
+  packets after it must wait. Thus the hits of a friend arrive later and in groups (`RemoteInputFeed`
+  lag). The clock estimate is also less accurate.
+- **Path changes.** During a song, iroh can change a connection from relayed to direct, or from
+  direct to relayed. Then the round trip changes quickly, and a clock correction can occur.
+  `LogPathChanges` writes each change to the log.
+- **Two relays.** A joiner sends all data through the host. Thus the data from one joiner to a
+  different joiner can go through two relays.
+
+### Rate limits
+
+- n0 does not publish the rate limits of the public relays. n0 can change these limits at any
+  time. Each relay limits the bytes that it receives from each connection. If a client sends more
+  than the limit, the relay decreases the speed of that client. The relay does not disconnect the
+  client. The limit has no effect on the other clients.
+- During a song, each member sends its inputs, the band meter and its state. The inputs are
+  reliable, with a maximum of 120 messages each second. The band meter is 10 messages each second.
+  The state is 4 messages each second. For each player, this is approximately 2 KB to 50 KB each
+  second. We did not measure this value yet.
+- The host sends the inputs of each member to all other joiners. Thus the host sends the most
+  data. With 4 members, the host sends 9 streams of inputs.
+- A rate limit is not a real cause of a disconnect during a song. The highest risk is a relayed
+  host in a full session. In that session, a rate limit can increase the latency. The reliable
+  inputs are not lost. They wait in a queue.
+
+### Availability and privacy
+
+- The public relays have no SLA. If a relay stops or starts again, all relayed connections through
+  it stop at the same time. If the host is relayed, each joiner loses the connection to the host.
+- The relay can see the IP addresses and the endpoint IDs of the two games. It can also see when
+  the games send data, and how much data they send.
+- When `"address_lookup"` is `true`, the library also publishes the addresses of each endpoint in
+  the DNS of n0.
+- Address lookup and the relays both use n0. If a ticket has only an ID, a session must have n0
+  for the two services.
+
+### iroh versions and the public relays
+
+- n0 updates the public relays to the newest iroh release. Usually, this occurs in 24 hours or
+  less after the release.
+- In iroh 1.x, the wire protocol is compatible across all minor versions and patch versions. Only
+  a new major version can make the wire protocol incompatible.
+- If a relay change makes the wire protocol incompatible, the new relays get new URLs. Thus older
+  clients can continue to use the old URLs.
+- n0 supports only the newest stable release on the public relays. Older versions can possibly
+  operate, but n0 can stop their support at any time.
+- The time between two iroh minor versions is 4 weeks or more. The time between two major versions
+  is 6 months or more.
+- Patch releases (also security fixes) are only for the newest minor version.
+- n0 does not have a channel for notices about relay changes. To find changes, read the
+  [release policy](https://docs.iroh.computer/about/release-policy), the
+  [changelog](https://iroh.computer/changelog) and the
+  [GitHub releases](https://github.com/n0-computer/iroh/releases).
+
+Thus a 1.x version will not stop and operate incorrectly. But only the newest version has support.
+
+We do not update iroh for each new release. Each update causes work: you must build the three
+plugins again, commit them, and do a test through the relays. Update iroh only for one of these
+causes:
+
+- A security advisory for a crate in `Cargo.lock`.
+- A new feature or a fix that YargLink must have.
+- A new major version.
+- n0 stops the support of our version on the public relays.
+
+The `audit` job in `.github/workflows/native-link.yml` runs `cargo-audit` on `Cargo.lock`. It runs
+on each pull request that changes YargLink, and one time each week. If a crate has a security
+advisory, the job fails. An unmaintained crate gives only a warning, and the job does not fail.
+
+To update iroh, change its version in `Cargo.toml`. Then do these steps in `Native/YargLink`:
+
+```bash
+cargo update -p iroh --precise <version>
+cargo test
+cargo test -- --ignored       # a test through n0's DNS and relays
+```
+
+Push your branch. Then, in the root of the repository, build the plugins:
+
+```bash
+dotnet run --project scripts/NativeBuild -- package --library link --ref <your branch>
+```
+
+Then commit `Cargo.toml`, `Cargo.lock` and the three plugins.
+
 ## Building
 
 ```bash

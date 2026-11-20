@@ -25,6 +25,9 @@ on:
       - "Tests/YARG.Link.Tests/**"
       - "scripts/NativeBuild/**"
       - ".github/workflows/native-link.yml"
+  # Each week, check Cargo.lock against new RustSec advisories. Only the audit job runs on this schedule.
+  schedule:
+    - cron: "0 6 * * mon"
   workflow_dispatch:
 
 permissions:
@@ -34,8 +37,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Fails when a crate in Cargo.lock has a security advisory. Warnings (for example, an unmaintained
+  # crate) do not fail it. We update iroh only when there is a reason, such as an advisory; see
+  # "iroh versions and the public relays" in Native/YargLink/README.md.
+  audit:
+    name: Security audit
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Runs cargo-audit directly, so rustup does not install the pinned toolchain only to read Cargo.lock
+      - name: Check Cargo.lock for advisories
+        working-directory: Native/YargLink
+        run: cargo-audit audit
+
   windows:
     name: Windows x64
+    if: github.event_name != 'schedule'
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +101,7 @@ jobs:
 
   linux:
     name: Linux x64
+    if: github.event_name != 'schedule'
     # Use an Ubuntu 20.04 container for a minimum glibc version of 2.31, as native-audio.yml does. Unity 6
     # supports Linux players on Ubuntu 20.04 and later, and Ubuntu 20.04 has glibc 2.31. NativeBuild builds
     # directly when it runs in this image, and in a docker container of it everywhere else, so
@@ -118,6 +141,7 @@ jobs:
 
   macos:
     name: macOS universal
+    if: github.event_name != 'schedule'
     # macos-26 and Xcode 26.0.1 for the same reasons as native-audio.yml: dyld on macOS 26
     # SIGKILLs some ad-hoc signatures and requires LC_UUID, and a pinned linker keeps the
     # byte-identical check meaningful. NativeBuild never runs codesign; the linker signs.
