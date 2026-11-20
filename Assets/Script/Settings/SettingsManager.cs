@@ -293,6 +293,8 @@ namespace YARG.Settings
                 nameof(Settings.ShowAdvancedMusicLibraryOptions),
                 nameof(Settings.MinimumLogLevel),
                 new FieldMetadata(nameof(Settings.LinkDebugScoreboard), visibleWhen: IsLinkEnabled),
+                new FieldMetadata(nameof(Settings.LinkDebugScoreBox), visibleWhen: IsLinkEnabled),
+                new FieldMetadata(nameof(Settings.LinkDebugConnections), visibleWhen: IsLinkEnabled),
             },
             new MetadataTab("Experimental", icon: "Beaker")
             {

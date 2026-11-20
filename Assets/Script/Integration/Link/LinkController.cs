@@ -1565,13 +1565,19 @@ namespace YARG.Integration.Link
         #region Scoreboard
 
         /// <summary>
-        /// The synced pause status, and the debugging scoreboard (Settings › Debug, off by default): the band's
-        /// score and stars are in the score box, and this adds per-player stats and each friend's connection
-        /// and clock sync.
+        /// The synced pause status, and the debug overlays (Settings › Debug, each off by default): the
+        /// connections panel (any scene), the score box values panel, and the scoreboard. The band's score and
+        /// stars are in the score box; the scoreboard adds per-player stats and each friend's connection and
+        /// clock sync. See LinkController.DebugOverlays.cs.
         /// </summary>
         private void OnGUI()
         {
-            if (GlobalVariables.Instance == null || GlobalVariables.Instance.CurrentScene != SceneIndex.Gameplay) return;
+            if (GlobalVariables.Instance == null) return;
+
+            // Where the next panel on the left can go, below the connections panel
+            float leftY = DrawConnectionsDebug();
+
+            if (GlobalVariables.Instance.CurrentScene != SceneIndex.Gameplay) return;
 
             // Even after the session ended, a song without its host shows its countdown
             bool hostGone = DrawHostGone();
@@ -1582,6 +1588,8 @@ namespace YARG.Integration.Link
             if (gm == null || !gm.IsSongStarted) return;
 
             if (!hostGone) DrawPauseStatus();
+
+            DrawScoreBoxDebug(gm);
 
             if (!(SettingsManager.Settings?.LinkDebugScoreboard.Value ?? false)) return;
 
@@ -1638,7 +1646,7 @@ namespace YARG.Integration.Link
             var content = new GUIContent(text.ToString().TrimEnd());
             var size = _scoreboardStyle.CalcSize(content);
             float pad = 12 * scale;
-            var box = new Rect(16 * scale, Screen.height * 0.3f, size.x + pad * 2, size.y + pad * 2);
+            var box = new Rect(16 * scale, Mathf.Max(Screen.height * 0.3f, leftY), size.x + pad * 2, size.y + pad * 2);
 
             var oldColor = GUI.color;
             GUI.color = new Color(0f, 0f, 0f, 0.6f);
