@@ -223,6 +223,48 @@ If the maintainers merge the branch, these tasks continue after the merge. Each 
 - **Data from friends:** A friend can use a modified game. Apply the `LinkLimits` limits to each new text, list or number from a friend, in the `Check` method of the message.
 - **Text:** The messages in `LinkController` are English text in the code. If the maintainers localize the game text, move these messages to the localization files.
 
+## Caveats
+
+These items are open. Some are decisions about gameplay that the maintainers must make. Others are known gaps. The restructure of the controller (`119e4afa`) and the uGUI banner (`68158be3`) did not change them.
+
+### Gameplay decisions
+
+1. **No fail is off in online play, and the host's meter fails the band.** `GameManager.NoFailMode` is always `Off` in online play, and the pause menu hides the no fail items. Thus a player who needs no fail (a beginner, or for accessibility) cannot play online. The weakest player ends the song for all players. In local multiplayer, the group can select no fail. A possible change: a session setting that the host selects, which the host sends with the start. The comment on `TrackPlayer.FailFromLink` says that "the host's no fail setting is the one that counts", but this setting does not exist yet.
+2. **Each member can start a song for all members, and the others cannot refuse.** When a member starts a song, each member in the menu goes to difficulty select (`SongRequests.OnLoadSong`). This resets `GlobalVariables.State` and covers the menu that was open, for example the settings or a profile. The member who started waits on the loading screen for a maximum of 120 s (`SyncedStart.MAX_WAIT_SECONDS`), and cannot start without the others. When two members start a song at the same time, the host cancels the second start ("is already starting"). Possible changes: a prompt to join the song, song selection only by the host, or "Start now" on the loading screen.
+3. **When a joiner loses the host, the joiner loses the run.** There is no host migration. A joiner goes back to the library 5 s after it loses the connection to the host, or 12 s after the host leaves the song (`HostLossTracker`). `GameManager.ForceQuitSong` does not save the score. Thus a short network problem on the host ends a long song for all joiners, and they get no score. A smaller change than host migration: go to the score screen with the part of the song that the players played.
+4. **One player can keep the band paused.** Each member can pause all members. The song continues only when every member in the song selects Resume (`PauseCoordinator`). There is no timeout and no "resume without them". A player who does not come back keeps the band paused until the others leave. Only the host can take all members to the library ("Leave With Party").
+5. **Online scores are saved as usual scores, but online play changes them.**
+   - A jump forward of the clock (0.5 s or more, `ClockCorrector.JUMP_THRESHOLD`) skips notes, and these notes are misses.
+   - On the host, the star power of friends' players changes the band bonus of the host's players (item 1 of "YARG.Core follow-up work" in `native-library-plan.md`). Thus the saved score of the host is higher than the same performance on a joiner.
+
+   Possible changes: mark online scores in the score database, keep them out of the usual high scores, or do not save a score after a jump.
+6. **The song speed of a joiner changes while it follows the host.** During a correction, the song plays at 98% or 102% speed (`ClockCorrector.SLEW_RATE`), and the audio sync follows. Nobody has listened for a change of pitch or tempo, with and without time stretch. This is most important on connections with a high latency, where corrections occur frequently.
+7. **Smaller items:**
+   - Friends' vocals and pro guitar players have no highway (`InputSender.CanMirror`). They have only an icon on the fail meter.
+   - The hits of friends show a network delay late. Passed notes stay on a friend's track for a maximum of 1 s (`BasePlayer.LateHitAllowance`).
+   - Inputs go on the reliable stream, at a maximum of 120 messages each second. Thus a lost packet stops a friend's track for a short time. It does not cause a gap.
+   - After the 120 s wait for a synced start, the toast says "Lost the online session", also when the session is connected and a friend was only slow.
+   - Each member's `failed` message fails the song for all members in that play (`LinkController.OnFriendFailed`). The handler does not check that the sender is the host. A joiner's meter can fail only when the host is not in the play, but a modified game can send `failed` at any time.
+
+### Existing functionality
+
+- **Shared code:** Some refactors in existing code must operate the same as before. Review them with the setting off:
+  - `GameManager.Loading` does the `_loadState == Error` check earlier.
+  - `GameManager.PushPauseMenu` is a new method that contains the old code.
+  - `PauseCore` uses `resumeRewind` (`Rewinding && _catchUpSongTime == null`) instead of `Rewinding`.
+  - `OnSongFailed` calls the new `FailSong`, and is no longer `async void`.
+  - `RecordScores`, `BandCombo` and `MeanAverageOffset` use `ActiveLocalPlayers`. Without friends' players, this is the same list as `ActivePlayers`.
+- **Pause menu items:** `GenericPause.BuildOnlineOptions` finds the items to hide by the name of the method that each button calls. If someone renames `Restart` or `TogglePractice`, the item shows in online play again, and no error occurs.
+- **Always present:** `LinkController` is created at startup, also when online play is off. It has no `OnGUI` now. Its `Update` returns early when the setting is off.
+
+### Code
+
+- **Not tested in a session:** The restructure of the controller and the uGUI banner were tested only with the C# compiler (all of `Assembly-CSharp`) and `YARG.Link.Tests` (154 tests). Nobody played a session with these changes. Before the merge, play a song with two games, and examine a pause, a resume, a host that leaves, a friend that drops out, and the banner over the pause menu.
+- **Unity code has no CI tests:** `Play/` (messages, clock correction, drop-outs, host loss, resume timing) has tests. The classes that connect these decisions to the game (`Song/`, `LinkController`) use Unity, and no CI test compiles them.
+- **Text:** The lobby, the toasts, the dialogs and the banner use English text in the code. Only the button labels are in `en-US.json`.
+- **Lobby:** The lobby is a `ListDialog` with rich text rows. It has no prefab of its own. A lobby with more functions (for example, a ready check or a song vote for item 2) needs a menu of its own.
+- **Debug overlays:** The two debug panels use IMGUI. They are off by default, and the game makes no IMGUI calls without them.
+
 ## Review order
 
 1. **All maintainers:** Read the summary and open questions 1 to 3 in the plan. If the maintainers do not accept P2P or Rust, much of the branch changes.
