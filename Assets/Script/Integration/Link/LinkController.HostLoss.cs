@@ -35,16 +35,21 @@ namespace YARG.Integration.Link
         private const string KIND_END_SONG = "endsong";
         private const string KIND_DROPPED  = "dropped";
 
-        /// <summary>Don't count the host as gone for this long: it may have just finished the song.</summary>
+        /// <summary>
+        /// Don't count the host as gone for this long, in seconds: it may have just finished the song.
+        /// </summary>
         private const double HOST_GONE_GRACE = 2.0;
 
-        /// <summary>The host left the song (or ended the session): it isn't coming back to it.</summary>
+        /// <summary>
+        /// The countdown after <see cref="HOST_GONE_GRACE"/>, in seconds, when the host left the song (or ended the
+        /// session): it isn't coming back to it.
+        /// </summary>
         private const double HOST_LEFT_TIMEOUT = 10.0;
 
         /// <summary>
-        /// How long a lost connection lasts mid-song before it's the end of the song for that player. Both sides
-        /// use it: the host drops a friend it lost this long ago, and a joiner who lost the host this long ago
-        /// leaves by itself, rather than reconnecting (which can take a while) only to hear it was dropped.
+        /// How long a lost connection lasts mid-song, in seconds, before it's the end of the song for that player.
+        /// Both sides use it: the host drops a friend it lost this long ago, and a joiner who lost the host this
+        /// long ago leaves by itself, rather than reconnecting (which can take a while) only to hear it was dropped.
         /// Each side counts from the other's last inputs (see <see cref="INPUTS_SILENCE"/>), or from when the
         /// transport reported the loss if that came first, so whichever gives up first, both end up agreeing.
         /// </summary>
@@ -64,7 +69,10 @@ namespace YARG.Integration.Link
 
         private GUIStyle _hostGoneStyle;
 
-        /// <summary>A friend who left the song (it may have just ended for them a moment before us).</summary>
+        /// <summary>
+        /// How long a friend who left the song keeps their highway, in seconds (it may have just ended for them a
+        /// moment before us).
+        /// </summary>
         private const double FRIEND_LEFT_GRACE = 2.0;
 
         /// <summary>When each friend with players on a highway was first seen gone from the song (member ID).</summary>
@@ -338,7 +346,11 @@ namespace YARG.Integration.Link
             gm.ForceQuitSong();
         }
 
-        /// <summary>Call every frame, even without a session.</summary>
+        /// <summary>
+        /// Call every frame. Also call it when there is no session: when the session ends during a song (the host
+        /// ends it, or we lose it), <see cref="_session"/> becomes null, but the countdown back to the library
+        /// must continue until it ends or we leave the song.
+        /// </summary>
         private void UpdateHostLoss()
         {
             // The song ended, or we left it (a destroyed GameManager compares equal to null)

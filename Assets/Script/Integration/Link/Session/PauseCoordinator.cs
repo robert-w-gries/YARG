@@ -22,6 +22,10 @@ namespace YARG.Integration.Link.Session
     /// Pauses are numbered (<see cref="Epoch"/>, which goes up with every synced resume), so a pause report
     /// that crosses a resume on the wire can't pause a game again or count toward the next pause.
     /// </para>
+    /// <para>
+    /// This class is separate from <see cref="SyncStartCoordinator"/>, which also waits until members are
+    /// ready. Refer to the remarks on <see cref="SyncStartCoordinator"/> for the reason.
+    /// </para>
     /// </remarks>
     public sealed class PauseCoordinator
     {

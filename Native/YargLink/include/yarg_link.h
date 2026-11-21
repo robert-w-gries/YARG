@@ -95,6 +95,10 @@ extern "C" {
 #define YL_LOG_DEBUG 4
 #define YL_LOG_TRACE 5
 
+/* Connection states (yl_stats.connected) */
+#define YL_STATS_NOT_CONNECTED 0 /* unknown, still connecting, or closed */
+#define YL_STATS_CONNECTED 1
+
 /* Paths (yl_stats.path) */
 #define YL_PATH_UNKNOWN 0
 #define YL_PATH_DIRECT 1 /* hole-punched, LAN or loopback */
@@ -111,7 +115,7 @@ typedef struct yl_event {
 } yl_event;
 
 typedef struct yl_stats {
-    uint32_t connected; /* 1 while the peer is connected */
+    uint32_t connected; /* YL_STATS_CONNECTED while the peer is connected, else YL_STATS_NOT_CONNECTED */
     uint32_t path;      /* YL_PATH_* */
     int64_t rtt_us;     /* round-trip time in microseconds, or -1 if not measured yet */
     uint64_t bytes_sent;     /* UDP payload bytes, including QUIC overhead */
@@ -244,8 +248,9 @@ YL_API int yl_peer_id(yl_handle *h, uint32_t peer, char *buf, size_t cap, size_t
 
 /*
  * Statistics for a peer. out must not be NULL. A peer that is not connected now (unknown, still
- * connecting, or disconnected) gives YL_OK with connected = 0, path = YL_PATH_UNKNOWN, rtt_us = -1
- * and byte counts of 0. It is not an error, because a peer can disconnect at any moment.
+ * connecting, or disconnected) gives YL_OK with connected = YL_STATS_NOT_CONNECTED,
+ * path = YL_PATH_UNKNOWN, rtt_us = -1 and byte counts of 0. It is not an error, because a peer can
+ * disconnect at any moment.
  */
 YL_API int yl_peer_stats(yl_handle *h, uint32_t peer, yl_stats *out);
 

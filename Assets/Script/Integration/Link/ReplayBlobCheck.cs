@@ -29,10 +29,24 @@ namespace YARG.Integration.Link
     /// </remarks>
     public static class ReplayBlobCheck
     {
-        /// <summary>The replay format version this check knows (<c>ReplayIO.REPLAY_VERSIONS.CURRENT</c>).</summary>
+        /// <summary>
+        /// The replay format version whose layout this check walks. When the check was written, this was
+        /// <c>ReplayIO.REPLAY_VERSIONS.CURRENT</c>.
+        /// </summary>
+        /// <remarks>
+        /// Do not derive this value from <c>ReplayIO.REPLAY_VERSIONS.CURRENT</c>. The value records the version
+        /// of the layout that is written in this file, not the version that YARG.Core writes now. If YARG.Core
+        /// changes its format and this value follows it automatically, this check accepts data that it does not
+        /// know how to walk. Because the value is fixed, a change in YARG.Core makes <see cref="IsSafe"/> refuse
+        /// the data and log an error, and the Tests/YARG.Link.Replay.Tests test fails. Then a person must compare
+        /// the layout with the YARG.Core readers and change this value.
+        /// </remarks>
         public const int KNOWN_REPLAY_VERSION = 19;
 
-        /// <summary>The profile format version this check knows (<c>YargProfile.PROFILE_VERSION</c>).</summary>
+        /// <summary>
+        /// The profile format version whose layout this check walks (<c>YargProfile.PROFILE_VERSION</c> when the
+        /// check was written). It is fixed for the same reason as <see cref="KNOWN_REPLAY_VERSION"/>.
+        /// </summary>
         public const int KNOWN_PROFILE_VERSION = 9;
 
         /// <summary>Players one replay may carry.</summary>

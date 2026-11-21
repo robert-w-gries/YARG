@@ -17,14 +17,19 @@ namespace YARG.Integration.Link
     /// <item><b>Score box values</b> (<see cref="SettingsManager.SettingContainer.LinkDebugScoreBox"/>): this
     /// game's own values next to the ones the score box and fail meter show, which come from the whole band
     /// (score, stars) or from the host (band meter). For each friend's player, the mirror engine here next to
-    /// what the friend's game reports. Refer to the authority table on <see cref="GameManager"/>.</item>
+    /// what the friend's game reports, and how late their hits show here. Each player's score, stars, combo and
+    /// notes hit are in this panel too. Refer to the authority table on <see cref="GameManager"/>.</item>
     /// <item><b>Connections</b> (<see cref="SettingsManager.SettingContainer.LinkDebugConnections"/>): the
-    /// health of each member's connection, in any scene while a session is open.</item>
+    /// health of each member's connection (path, round trip, data rates, clock offset, last inputs), in any
+    /// scene while a session is open.</item>
     /// </list>
     /// </remarks>
     public partial class LinkController
     {
-        /// <summary>A reported value and our own differ by more than this before the panel highlights it.</summary>
+        /// <summary>
+        /// A reported meter value and our own differ by more than this before the panel highlights it. The meter
+        /// goes from 0 (failed) to 1 (full), so 0.01 is 1% of the meter.
+        /// </summary>
         private const float HAPPINESS_TOLERANCE = 0.01f;
 
         /// <summary>How often the data rates in the connections panel are measured, in seconds.</summary>
@@ -108,7 +113,11 @@ namespace YARG.Integration.Link
             {
                 if (player == null) continue;
                 string name = $"<b>{Escape(player.Player.Profile.Name)}</b>";
-                panel.Row(name, $"{player.Score:N0}", "", "");
+                panel.Row(name, "", "", "");
+                panel.Row("  score", $"{player.Score:N0}", "", "");
+                panel.Row("  stars", $"{player.Stars:0.00}", "", "");
+                panel.Row("  combo", $"{player.Combo}", "", "");
+                panel.Row("  notes", NotesText(player.NotesHit, player.BaseStats.TotalNotes), "", "");
                 AddMeterRow(panel, gm, player, isHost, hostDecides);
             }
 
@@ -126,7 +135,7 @@ namespace YARG.Integration.Link
                     {
                         panel.Row("  score", Tint("no highway", DIM), $"{feed.Score:N0}", "");
                         panel.Row("  stars", "", $"{feed.Stars:0.00}", "");
-                        panel.Row("  notes", "", $"{feed.NotesHit}/{feed.TotalNotes}", "");
+                        panel.Row("  notes", "", NotesText(feed.NotesHit, feed.TotalNotes), "");
                     }
                     else
                     {
@@ -137,14 +146,19 @@ namespace YARG.Integration.Link
                         panel.Row("  stars", $"{mirror.Stars:0.00}", $"{feed.Stars:0.00}",
                             Diff(feed.Stars - mirror.Stars, "0.00"));
                         panel.Row("  combo", $"{mirror.Combo}", $"{feed.Combo}", Diff(feed.Combo - mirror.Combo));
-                        panel.Row("  notes", $"{mirror.NotesHit}/{mirror.BaseStats.TotalNotes}",
-                            $"{feed.NotesHit}/{feed.TotalNotes}", Diff(feed.NotesHit - mirror.NotesHit));
+                        panel.Row("  notes", NotesText(mirror.NotesHit, mirror.BaseStats.TotalNotes),
+                            NotesText(feed.NotesHit, feed.TotalNotes), Diff(feed.NotesHit - mirror.NotesHit));
                         AddMeterRow(panel, gm, mirror, isHost, hostDecides);
                     }
 
                     if (!feed.HasData)
                     {
                         panel.Span(Tint("  nothing received yet", WARN));
+                    }
+                    else
+                    {
+                        // How late the friend's hits show on their highway here
+                        panel.Row("  late", $"{feed.Lag * 1000:0} ms", "", "");
                     }
                 }
             }
@@ -185,6 +199,13 @@ namespace YARG.Integration.Link
             panel.Row("  meter", local, $"{host:0.000}", Diff(host - container.Happiness, "0.000", HAPPINESS_TOLERANCE));
         }
 
+        /// <summary>Notes hit, of all notes, with the percentage: "412/500 (82%)".</summary>
+        private static string NotesText(int hit, int total)
+        {
+            string percent = total > 0 ? $"{100.0 * hit / total:0}%" : "-";
+            return $"{hit}/{total} ({percent})";
+        }
+
         private static BasePlayer FindMirror(GameManager gm, RemoteInputFeed feed)
         {
             foreach (var player in gm.Players)
@@ -212,10 +233,10 @@ namespace YARG.Integration.Link
 
         #region Connections
 
-        /// <summary>The connection health panel, at the top left. Returns where the next left panel can go.</summary>
-        private float DrawConnectionsDebug()
+        /// <summary>The connection health panel, at the top left.</summary>
+        private void DrawConnectionsDebug()
         {
-            if (!ShowConnectionsDebug || _session == null) return 0;
+            if (!ShowConnectionsDebug || _session == null) return;
 
             var panel = new DebugPanel();
             bool isHost = _session.Role == LinkRole.Host;
@@ -268,7 +289,7 @@ namespace YARG.Integration.Link
 
             AddSongSyncRows(panel);
 
-            return panel.Draw(this, alignRight: false, y: 16 * Scale);
+            panel.Draw(this, alignRight: false, y: 16 * Scale);
         }
 
         private string[] MemberCells(LinkMember member, bool isHost)
@@ -417,6 +438,12 @@ namespace YARG.Integration.Link
         private static float Scale => Screen.height / 1080f;
 
         private static string Tint(string text, string color) => $"<color={color}>{text}</color>";
+
+        /// <summary>
+        /// Text from a friend, made safe for a rich text label: a zero-width space after each "&lt;" stops it from
+        /// starting a tag.
+        /// </summary>
+        private static string Escape(string text) => text.Replace("<", "<\u200B");
 
         /// <summary>
         /// A box of text in aligned columns. A row with one cell spans the whole box.

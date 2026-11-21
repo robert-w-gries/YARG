@@ -190,13 +190,13 @@ fn stats_report_direct_path_and_rtt() {
     b.expect(YL_EVENT_MESSAGE);
 
     let stats = a.stats(at_a);
-    assert_eq!(stats.connected, 1);
+    assert_eq!(stats.connected, YL_STATS_CONNECTED);
     assert_eq!(stats.path, YL_PATH_DIRECT);
     assert!(stats.rtt_us >= 0);
     assert!(stats.bytes_sent > 0);
 
     let unknown = a.stats(9999);
-    assert_eq!(unknown.connected, 0);
+    assert_eq!(unknown.connected, YL_STATS_NOT_CONNECTED);
 }
 
 #[test]
@@ -217,7 +217,7 @@ fn local_disconnect_is_reported_on_both_sides() {
     assert_eq!(yl_disconnect(a.0, at_a), YL_OK);
     assert_eq!(a.send(at_a, 0, b"gone"), YL_OK);
     assert!(a.next(Duration::from_millis(200)).is_none());
-    assert_eq!(a.stats(at_a).connected, 0);
+    assert_eq!(a.stats(at_a).connected, YL_STATS_NOT_CONNECTED);
 }
 
 #[test]
@@ -385,7 +385,7 @@ fn null_pointers_are_rejected_first() {
     assert_eq!(len, 0);
     assert_eq!(unsafe { yl_send(a.0, 99, 0, ptr::null(), 0) }, YL_OK);
     assert_eq!(unsafe { yl_peer_stats(a.0, 99, &mut stats) }, YL_OK);
-    assert_eq!(stats.connected, 0);
+    assert_eq!(stats.connected, YL_STATS_NOT_CONNECTED);
 }
 
 #[test]
@@ -818,6 +818,8 @@ fn header_constants_match() {
         ("YL_LOG_INFO", YL_LOG_INFO.into()),
         ("YL_LOG_DEBUG", YL_LOG_DEBUG.into()),
         ("YL_LOG_TRACE", YL_LOG_TRACE.into()),
+        ("YL_STATS_NOT_CONNECTED", YL_STATS_NOT_CONNECTED.into()),
+        ("YL_STATS_CONNECTED", YL_STATS_CONNECTED.into()),
         ("YL_PATH_UNKNOWN", YL_PATH_UNKNOWN.into()),
         ("YL_PATH_DIRECT", YL_PATH_DIRECT.into()),
         ("YL_PATH_RELAY", YL_PATH_RELAY.into()),

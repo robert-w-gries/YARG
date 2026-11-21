@@ -494,7 +494,7 @@ Phase 2 notes (2026-11-14):
 - The secret key is in `<persistent data>/link/secret.key`, so the invite code stays the same between
   runs. The key file is locked, and a second instance on the same machine gets a temporary ID.
   *Superseded (security review, 2026-11-15):* every session now gets a new identity, so codes expire
-  with their session and joiners can't be recognised across sessions. Old key files are deleted. See
+  with their session and joiners can't be recognised across sessions. See
   "Security review: admission and identity" below.
 - *(Loopback superseded 2026-11-18: the game uses only the native transport.)* `LinkController` uses the native transport by default. `-link-transport loopback` (or a `loopback:`
   ticket) picks loopback, and hosting falls back to loopback when the platform has no library yet
@@ -617,7 +617,8 @@ Phase 4 notes (2026-11-15):
 Security review: admission and identity (2026-11-15):
 
 - **Invite codes last one session.** The persistent `link/secret.key` is gone (`key_file` was removed
-  from the native config, and the game deletes an old key file the first time it opens a transport).
+  from the native config). Only development builds wrote the key file, so the game does not delete old
+  key files.
   Every host and joiner endpoint gets a new random identity, so a code that leaked stops working when
   its session ends, and a host can't recognise or dial a joiner later. Joiners also refuse incoming
   connections (`accept: false`). The Discord join flow hands out each session's code (see the phase 5

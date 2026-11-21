@@ -17,7 +17,7 @@ namespace YARG.Integration.Link
     /// </remarks>
     public class RemoteInputFeed
     {
-        /// <summary>The feed counts as stalled after this long without data.</summary>
+        /// <summary>The feed counts as stalled after this long without data, in seconds.</summary>
         public const double STALL_SECONDS = 3.0;
 
         /// <summary>

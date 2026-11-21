@@ -381,8 +381,15 @@ namespace YARG.Gameplay
         /// </summary>
         public double InputTimeAtCall => Paused ? InputTime : GetInputTime(InputManager.CurrentInputTime);
 
-        /// <inheritdoc cref="SongRunner.ShiftInputTime"/>
-        public void ShiftInputTime(double seconds) => _songRunner.ShiftInputTime(seconds);
+        /// <summary>
+        /// Online play: move the song by a small amount of input time, without a seek. Refer to
+        /// <see cref="SongRunner.ShiftInputTime"/>. This method has no effect when the song is not online play.
+        /// </summary>
+        public void ShiftInputTime(double seconds)
+        {
+            if (!IsOnlinePlay) return;
+            _songRunner.ShiftInputTime(seconds);
+        }
 
         /// <summary>
         /// The song time that the engines reached before <see cref="JumpInputTime"/> moved the song back. The
