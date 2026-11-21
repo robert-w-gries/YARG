@@ -451,7 +451,7 @@ namespace YARG.Playback
         /// <para>
         /// The joiner measures the difference to the song clock of the host. When the difference is 10 ms or
         /// more, it starts to call this method each frame with a step of a maximum of 2% of the frame time
-        /// (<c>LinkController.CorrectClock</c>). It stops when the difference is less than 3 ms. A seek
+        /// (<c>ClockSync</c> and <c>ClockCorrector</c>). It stops when the difference is less than 3 ms. A seek
         /// (<see cref="SetSongTime"/>) corrects the difference immediately. But a seek restarts the audio, and
         /// the player hears a jump. A small step changes only the anchor of the input timeline. The audio
         /// synchronizer then corrects the audio, as it does for all other drift. Only when the difference is

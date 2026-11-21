@@ -28,8 +28,8 @@ C# paths start at `Assets/Script/`. Line counts are added lines, without `.meta`
 | 5 | Replay data from peers | YARG.Core replays | `ReplayBlobCheck.cs` | 300 + 260 tests |
 | 6 | Online controller | Gameplay | `LinkController*.cs` (13 partial files), `RemoteInputFeed.cs` | 2,900 |
 | 7 | Friends' tracks | Track, player, visuals | `Gameplay/Player/*`, `TrackElements/*`, `YargPlayer.cs`, `GameManager.Loading.cs` | 250 |
-| 8 | Scores and band fail meter | Engine, scores | `GameManager.cs`, `FailMeter.cs`, `LinkController.BandMeter.cs` | 350 |
-| 9 | Song time and synced start | Audio, playback | `SongRunner.cs`, `LinkController.ClockSync.cs`, `GameManager.Loading.cs` | 300 |
+| 8 | Scores and band fail meter | Engine, scores | `GameManager.cs`, `FailMeter.cs`, `Song/BandMeterSync.cs` | 350 |
+| 9 | Song time and synced start | Audio, playback | `SongRunner.cs`, `Song/ClockSync.cs`, `Play/ClockCorrector.cs`, `GameManager.Loading.cs` | 300 |
 | 10 | Lobby, settings, text, launch options | Menus, localization | `LinkLobby.cs`, `MainMenu.*`, `MenuManager.cs`, settings, `en-US.json`, `CommandLineArgs.cs` | 740 |
 | 11 | Window launch arguments | Settings, display | `ScreenHelper.cs`, `SettingsManager*.cs`, `CommandLineArgs.cs` | 60 |
 | 12 | Discord invites | Discord Game SDK | `Integration/DiscordController.cs`, `LinkController.cs` | 380 |
@@ -100,9 +100,10 @@ Examine these items:
 
 Examine these items:
 
-- **Size:** `LinkController` is divided into 13 partial files, one for each responsibility: the transport, the session status, the synced start, song requests, game data, the shared song, the setups of friends, pause sync, host loss, the band meter, the clock sync and the debug overlays. `LinkController.cs` has the lifecycle and the session events (530 lines). `LinkSession` is divided in the same way: peers and admission, messages and the roster, and the synced start.
+- **Structure:** `LinkController` opens the session, sends each event and each message to the class that handles it, and is the only entry point for the game. Each responsibility is a separate class: `SongRequests`, `SyncedStart`, `HostLoss` and `LinkDebugOverlays` for the session, and `SyncedSong` for one song. `SyncedSong` owns the state of the song: our players (`InputSender`), the friends' players (`RemoteSetup`), and the features `BandMeterSync`, `PauseSync`, `ClockSync` and `Departures`. When the song ends, the object goes away with all its state. The decisions that do not need Unity are in `Play/` (`ClockCorrector`, `DepartureTracker`, `HostLossTracker`, `ResumeTiming`, `HostMeterReadings`), with tests in `Tests/YARG.Link.Tests`.
+- **Messages:** The game data about songs are typed classes in `Play/PlayMessages.cs` (`PlayProtocol`). Each class checks the values from a friend in `Check`, before a handler gets the message. The wire format did not change in the restructure.
 - **Modes:** `CanMirror` does not send vocals or pro guitar. The plan gives the causes.
-- **Leave and host loss:** `LinkController.HostLoss.cs`. When the host selects Back to Library, the host can leave with the party (`endsong`) or leave alone. The host removes a friend that left the song or that sent no inputs for 5 s (`dropped`). A joiner without a host shows a countdown and goes back to the library. There is no host migration.
+- **Leave and host loss:** `Song/HostLoss.cs` and `Song/Departures.cs`. When the host selects Back to Library, the host can leave with the party (`endsong`) or leave alone. The host removes a friend that left the song or that sent no inputs for 5 s (`dropped`). A joiner without a host shows a countdown and goes back to the library. There is no host migration.
 - **Debug overlays:** Two IMGUI boxes are debugging aids, off by default: Settings › Debug › Online link score box values (the values of this game against the values in the score box, for each player) and Online link connections (the health of each connection). The band's score and stars are in the normal score box. The old scoreboard overlay was removed, because these two boxes show all of its data.
 
 ### 7. Friends' tracks
@@ -129,7 +130,7 @@ Examine these items:
 - **Engine managers:** `EngineManagerFor` gives each friend a separate `EngineManager`. On the host, friends' players use the main manager. Thus the meter of the host includes all players.
 - **Star power:** On the host, friends' engines also change the star power multiplier and unisons. Thus the band bonus of a player is different on the host and on a client. A fix needs a YARG.Core change (item 1 in "YARG.Core follow-up work" in `native-library-plan.md`).
 - **Clients:** The main manager of a client has fail off. Only the meter of the host can fail the song.
-- **Meter icons:** On a client, `FailMeter` shows an icon for each player in the host's `meter` message, at the host's value (`LinkController.BandMeterMarkers`). A player that the host does not count has no icon.
+- **Meter icons:** On a client, `FailMeter` shows an icon for each player in the host's `meter` message, at the host's value (`BandMeterSync.Markers`). A player that the host does not count has no icon.
 - **Band total:** The score box shows the band total and stars (`GameManager.ScoreBoxScore` and `ScoreBoxStars`). It adds the score and band bonus that each player's own game reports, for players with a track, and gets stars from all their cutoffs. It is not in `BandScore` or in saved scores.
 - **Score screen:** The header shows the same band total and stars as the score box (`ScoreScreenStats.BandScore` and `BandStars`). It shows only these values. `RecordScores` saves the score of the local players. The card of a friend's player uses the score, band bonus and stars that the friend's game reports (`GameManager.ScoreCardStats`). The other stats come from the mirror. Thus all games show the same numbers.
 
@@ -180,12 +181,12 @@ These fixes are not online code. Move them to a separate PR.
 
 ## Items for all areas
 
-- **Layers:** Each layer uses only the layer below it: Rust library (1), transport (3), session (4), controller (6), game hooks (7 to 10). The session and transport code must not use Unity or gameplay types.
+- **Layers:** Each layer uses only the layer below it: Rust library (1), transport (3), session (4), play messages and decisions (`Play/`, part of 6), controller (6), game hooks (7 to 10). The transport, session and play code must not use Unity, YARG.Core or gameplay types.
 - **Setting off:** When `LinkEnable` is off, areas 7 to 10 and 12 must operate the same as on `dev`. Each reviewer must examine this in their files.
 - **Peers that are not safe:** The protection is in areas 1, 3, 4 and 5. One reviewer must examine these four areas together. Commits `8af572acf` and `6d3b90e7c` show the changes from the security review.
 - **Shared files:** `GameManager.Loading.cs` has changes for areas 7, 8 and 9. `CommandLineArgs.cs` and `SettingsManager*.cs` have changes for areas 10, 11 and 12. `LinkController.cs` has changes for areas 6 and 12.
 - **YARG.Core:** Some limitations exist because the branch does not change Core. The Core maintainers must select the changes that they want. The list is in "YARG.Core follow-up work" in `native-library-plan.md`.
-- **Tests:** `native-link.yml` runs `YARG.Link.Tests` when `Native/YargLink/`, the plugins, `Integration/Link/Transport/`, `Integration/Link/Session/`, `Tests/YARG.Link.Tests/`, `scripts/NativeBuild/` or the workflow change. These are all the files that the tests compile or load. The other files in `Integration/Link` use Unity, and no CI test compiles them. CI does not run `YARG.Link.Replay.Tests`, which tests `ReplayBlobCheck.cs`. Should CI run these tests when `ReplayBlobCheck.cs` or the YARG.Core pin changes?
+- **Tests:** `native-link.yml` runs `YARG.Link.Tests` when `Native/YargLink/`, the plugins, `Integration/Link/Transport/`, `Integration/Link/Session/`, `Integration/Link/Play/`, `Tests/YARG.Link.Tests/`, `scripts/NativeBuild/` or the workflow change. These are all the files that the tests compile or load. The other files in `Integration/Link` use Unity, and no CI test compiles them. CI does not run `YARG.Link.Replay.Tests`, which tests `ReplayBlobCheck.cs`. Should CI run these tests when `ReplayBlobCheck.cs` or the YARG.Core pin changes?
 
 ## Maintenance tasks
 
@@ -204,7 +205,7 @@ If the maintainers merge the branch, these tasks continue after the merge. Each 
 
 - **Replay format:** `ReplayBlobCheck` accepts only one replay version and one profile version. If Core changes the replay, profile, engine parameter or stats format, update the check. If you do not update it, friends' tracks do not show.
 - **Replay tests:** CI does not run `YARG.Link.Replay.Tests`. Run them manually after a Core update.
-- **Game modes:** `LinkController.CanMirror` sets which game modes show as a friend's track. A new game mode needs replay support in Core before it can show.
+- **Game modes:** `InputSender.CanMirror` sets which game modes show as a friend's track. A new game mode needs replay support in Core before it can show.
 
 ### When gameplay code changes
 
@@ -217,8 +218,9 @@ If the maintainers merge the branch, these tasks continue after the merge. Each 
 
 - **Versions:** There is no protocol version. Friends must have the same game version. A message change does not need a version change. But all friends must update to the same build.
 - **Local builds:** Two local builds with changes that are not committed have the same game version. They can connect, but their messages can be different. When you test a message change, build all test games again.
-- **Song messages:** Each message about a song must have the `play` ID of `SharedSong`. Each message that the game receives about a song must go through `LinkController.IsFromSongPlay`. Without this, messages from a restarted song have an effect on the new song.
-- **Data from friends:** A friend can use a modified game. Apply the `LinkLimits` limits to each new text, list or number from a friend.
+- **Song messages:** Each message about a song must derive from `SongPlayMessage`, and go out through `SyncedSong.Send`, which adds the song hash and the play ID. Each message that the game receives about a song must go through `SyncedSong.IsFromPlay`. Without this, messages from a restarted song have an effect on the new song.
+- **New messages:** Add a class to `Play/PlayMessages.cs`, register it in `PlayProtocol`, and add its case to `LinkController.OnGameData`.
+- **Data from friends:** A friend can use a modified game. Apply the `LinkLimits` limits to each new text, list or number from a friend, in the `Check` method of the message.
 - **Text:** The messages in `LinkController` are English text in the code. If the maintainers localize the game text, move these messages to the localization files.
 
 ## Review order

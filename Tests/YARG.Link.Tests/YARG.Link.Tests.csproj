@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Unit tests for the online link's transport and session layers, which are plain .NET so they can be
+    Unit tests for the online link's transport, session and play layers, which are plain .NET so they can be
     tested without Unity. Builds the sources straight from Assets/. Run with:
       dotnet test Tests/YARG.Link.Tests
     Each suite runs on MemoryLinkTransport (in this project, never in the game) and on the native
@@ -22,6 +22,7 @@
   <ItemGroup>
     <Compile Include="../../Assets/Script/Integration/Link/Transport/**/*.cs" LinkBase="Link/Transport" />
     <Compile Include="../../Assets/Script/Integration/Link/Session/**/*.cs" LinkBase="Link/Session" />
+    <Compile Include="../../Assets/Script/Integration/Link/Play/**/*.cs" LinkBase="Link/Play" />
   </ItemGroup>
 
   <ItemGroup>
