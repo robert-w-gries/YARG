@@ -228,8 +228,8 @@ namespace YARG.Integration.Link
             text.Append("<b>").Append(Escape(name)).Append("</b>");
             if (host) text.Append(" <color=#909090>(host)</color>");
 
-            string statusColor = status == LinkController.STATUS_READY ? "#80ff80" : "#c0c0c0";
-            text.Append($"  <color={statusColor}>{LinkController.DescribeStatus(status)}</color>");
+            string statusColor = status == LinkStatus.READY ? "#80ff80" : "#c0c0c0";
+            text.Append($"  <color={statusColor}>{LinkStatus.Describe(status)}</color>");
 
             text.Append("  <color=#c0c0c0>");
             if (players == null || players.Count == 0)

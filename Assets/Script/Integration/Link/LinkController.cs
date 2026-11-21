@@ -1,10 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using Cysharp.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using YARG.Core.Logging;
+using YARG.Core.Replays;
+using YARG.Core.Song;
+using YARG.Gameplay;
+using YARG.Gameplay.HUD;
+using YARG.Integration.Link.Play;
 using YARG.Integration.Link.Session;
 using YARG.Integration.Link.Transport;
+using YARG.Menu;
 using YARG.Menu.Persistent;
 using YARG.Player;
 using YARG.Settings;
@@ -20,10 +28,11 @@ namespace YARG.Integration.Link
     /// is in the session, gameplay holds at the loading screen until the session schedules a synced start.
     /// </para>
     /// <para>
-    /// During a synced song each game broadcasts a <c>setup</c> (its players' profiles and engine parameters,
-    /// as replay data) when it's ready, then streams <c>inputs</c>: each player's recorded inputs plus their
-    /// score. The other games add a highway per friend's player that plays those inputs back like a replay,
-    /// so you see their notes being hit and missed. The score box shows the band's score from every game.
+    /// During a synced song each game broadcasts a <see cref="SetupMessage"/> (its players' profiles and engine
+    /// parameters, as replay data) when it's ready, then streams <see cref="InputsMessage"/>s: each player's
+    /// recorded inputs plus their score. The other games add a highway per friend's player that plays those
+    /// inputs back like a replay, so you see their notes being hit and missed. The score box shows the band's
+    /// score from every game.
     /// </para>
     /// <para>
     /// Sessions are hosted and joined from the lobby (<see cref="LinkLobby"/>, "Online" in the main menu). The
@@ -40,55 +49,66 @@ namespace YARG.Integration.Link
     /// </list>
     /// </para>
     /// <para>
-    /// This file opens and closes the session, and handles the session's events. Each other part of online play
-    /// is in its own file:
+    /// This class opens and closes the session, sends each session event and each message from a friend to the
+    /// part that handles it, and is the one entry point for the rest of the game. The parts:
     /// <list type="bullet">
-    /// <item><c>Transport</c>: the YargLink library and its settings.</item>
-    /// <item><c>Status</c>: our status and players for friends' lobbies, and how friends are connected.</item>
-    /// <item><c>SongRequests</c>: a friend picked a song.</item>
-    /// <item><c>SyncedStart</c>: everyone starts the song at the same moment.</item>
-    /// <item><c>GameData</c>: what the games send each other during a song. <c>SharedSong</c> is our side of
-    /// the song, and <c>RemoteSetup</c> a friend's side.</item>
-    /// <item><c>BandMeter</c>: the host's fail meter is the band's (<see cref="UpdateBandMeter"/>).</item>
-    /// <item><c>PauseSync</c>: a pause pauses everyone.</item>
-    /// <item><c>ClockSync</c>: the joiners' song clocks follow the host's.</item>
-    /// <item><c>HostLoss</c>: leaving a song, and a song that lost its host.</item>
-    /// <item><c>DebugOverlays</c>: the debug panels in Settings › Debug.</item>
+    /// <item><see cref="LinkTransportFactory"/>: the YargLink library and its settings.</item>
+    /// <item><see cref="LinkStatus"/> and <see cref="ConnectionLog"/>: our status for friends' lobbies, and how
+    /// friends are connected.</item>
+    /// <item><see cref="SongRequests"/>: a friend picked a song.</item>
+    /// <item><see cref="SyncedStart"/>: everyone starts the song at the same moment.</item>
+    /// <item><see cref="SyncedSong"/>: one synced song, with our players (<see cref="InputSender"/>), our
+    /// friends' (<see cref="RemoteSetup"/>), and the features that run during it: the band meter, pauses, clock
+    /// sync and drop-outs.</item>
+    /// <item><see cref="HostLoss"/>: leaving a song, and a song that lost its host.</item>
+    /// <item><see cref="LinkDebugOverlays"/>: the debug panels in Settings › Debug.</item>
     /// </list>
+    /// The messages that games send each other about songs are in <see cref="PlayProtocol"/>. The decisions
+    /// that don't need Unity are in the <c>Play</c> folder (<see cref="ClockCorrector"/>,
+    /// <see cref="DepartureTracker"/>, <see cref="HostLossTracker"/>, <see cref="ResumeTiming"/>), with tests in
+    /// <c>Tests/YARG.Link.Tests</c>.
     /// </para>
     /// <para>
     /// The transport is always <see cref="NativeLinkTransport"/> (iroh: hole punching, relays, encryption).
     /// Without the YargLink library for this platform, online play isn't available.
     /// </para>
     /// </remarks>
-    public partial class LinkController : MonoBehaviour
+    public sealed class LinkController : MonoBehaviour
     {
         /// <summary>A joiner tries to reach the host again this often, in seconds.</summary>
         private const double REJOIN_INTERVAL = 5.0;
 
+        /// <summary>How often our status and players are checked for changes, for friends' lobbies, in seconds.</summary>
+        private const double STATE_INTERVAL = 0.25;
+
         public static LinkController Instance { get; private set; }
 
         private static readonly Stopwatch Clock = Stopwatch.StartNew();
-        private static double Now => Clock.Elapsed.TotalSeconds;
+
+        /// <summary>The clock of all online timing, in seconds.</summary>
+        internal static double Now => Clock.Elapsed.TotalSeconds;
 
         private LinkSession _session;
 
         /// <summary>Joiner only: the host's invite code.</summary>
         private string _joinTicket;
         private double _nextJoinTime = double.PositiveInfinity;
-        private string _lastProblem;
+        private double _nextStateTime;
 
         /// <summary>Launch options (or environment variables) can open a session once, at startup.</summary>
         private bool _launchOptionsUsed;
 
+        private readonly SongRequests  _requests = new();
+        private readonly SyncedStart   _start = new();
+        private readonly HostLoss      _hostLoss = new();
+        private readonly ConnectionLog _connections = new();
+        private LinkDebugOverlays _debug;
+
         // Friends' latest player setups not yet added to a song, by member ID: kept for us to join
-        private readonly Dictionary<string, RemoteSetup> _remoteSetups = new();
+        private readonly Dictionary<string, RemoteSetup> _pendingSetups = new();
 
-        // Friends' setups added to the synced song we're in (_shared), by member ID. Until that song ends
-        private readonly Dictionary<string, RemoteSetup> _songSetups = new();
-
-        // The synced song we're sharing our inputs for, if any
-        private SharedSong _shared;
+        // The synced song we're in, if any
+        private SyncedSong _song;
 
         /// <summary>Whether Settings › Experimental › "Enable online link" is on.</summary>
         public static bool IsEnabled => SettingsManager.Settings?.LinkEnable.Value ?? false;
@@ -100,6 +120,11 @@ namespace YARG.Integration.Link
 
         /// <summary>The current session, if we're hosting or joining one.</summary>
         public LinkSession CurrentSession => _session;
+
+        /// <summary>The synced song we're in, if any.</summary>
+        internal SyncedSong Song => _song;
+
+        internal HostLoss HostLoss => _hostLoss;
 
         /// <summary>
         /// The code friends use to join: ours when hosting, the host's when joining. <c>null</c> without a session.
@@ -116,7 +141,10 @@ namespace YARG.Integration.Link
         public bool IsConnecting => _session is { Role: LinkRole.Join, IsConnected: false };
 
         /// <summary>Joiner only: why the last attempt to reach the host failed, if it did.</summary>
-        public string ConnectProblem => IsConnecting ? _lastProblem : null;
+        internal string LastProblem { get; private set; }
+
+        /// <summary>Joiner only: why the last attempt to reach the host failed, if it did.</summary>
+        public string ConnectProblem => IsConnecting ? LastProblem : null;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Create()
@@ -132,6 +160,11 @@ namespace YARG.Integration.Link
             };
         }
 
+        private void Awake()
+        {
+            _debug = new LinkDebugOverlays(this);
+        }
+
         private void Update()
         {
             if (GlobalVariables.Instance == null) return;
@@ -139,7 +172,7 @@ namespace YARG.Integration.Link
             if (!IsEnabled)
             {
                 if (_session != null) Close();
-                _hostGone = null;
+                _hostLoss.Clear();
                 LinkLobby.CloseIfOpen();
                 return;
             }
@@ -155,7 +188,7 @@ namespace YARG.Integration.Link
             if (_session == null)
             {
                 // A song whose session ended still counts down to leaving
-                UpdateHostLoss();
+                _hostLoss.Update(null, null, Now);
                 return;
             }
 
@@ -166,27 +199,30 @@ namespace YARG.Integration.Link
                 if (_session == null) return;
             }
 
-            _session.SetLocalScene(SceneName(GlobalVariables.Instance.CurrentScene));
+            _session.SetLocalScene(LinkStatus.SceneName(GlobalVariables.Instance.CurrentScene));
             UpdateLocalState();
             _session.Update();
             if (_session == null) return;
 
-            LogPathChanges();
-            CheckRemoteRequestAbandoned();
-            CheckSongEnded();
-            UpdateBandMeter();
-            UpdatePauseSync();
-            UpdateClockSync();
-            UpdateDepartedFriends();
-            UpdateHostLoss();
+            _connections.Update(_session, Now);
+            _requests.Update(_session);
+
+            // Drop per-song state once we've left gameplay. OnSongExited usually has already.
+            if (_song != null && GlobalVariables.Instance.CurrentScene != SceneIndex.Gameplay)
+            {
+                EndSong();
+            }
+
+            _song?.Update(Now);
+            _hostLoss.Update(_session, _song, Now);
         }
 
         private void LateUpdate()
         {
             // After GameManager.Update, so this frame's inputs are recorded
-            if (_session != null && _shared != null)
+            if (_session != null && _song != null && !_start.IsWaiting)
             {
-                SendInputs();
+                _song.Local.Update(_session, Now);
             }
         }
 
@@ -204,7 +240,7 @@ namespace YARG.Integration.Link
         public bool Host()
         {
             Close();
-            if (!Open(LinkRole.Host, null)) return false;
+            if (!Open(LinkRole.Host)) return false;
 
             LastHostedInviteCode = _session.LocalTicket;
             CopyInviteCode();
@@ -227,7 +263,7 @@ namespace YARG.Integration.Link
             }
 
             Close();
-            if (!Open(LinkRole.Join, ticket)) return false;
+            if (!Open(LinkRole.Join)) return false;
 
             _joinTicket = ticket;
             ConnectToHost();
@@ -275,6 +311,12 @@ namespace YARG.Integration.Link
             GUIUtility.systemCopyBuffer = InviteCode;
         }
 
+        /// <summary>How we're connected to a member, for people. Refer to <see cref="LinkStatus.DescribeConnection"/>.</summary>
+        public string DescribeConnection(LinkMember member) => LinkStatus.DescribeConnection(_session, member);
+
+        /// <summary>Whether a member's connection is too slow to play on comfortably.</summary>
+        public bool IsConnectionPoor(LinkMember member) => LinkStatus.IsConnectionPoor(_session, member);
+
         /// <summary>
         /// Launch options for development (two instances without touching the lobby): <c>-link-join</c> joins,
         /// <c>-link-host</c> hosts.
@@ -296,9 +338,9 @@ namespace YARG.Integration.Link
 #endif
         }
 
-        private bool Open(LinkRole role, string join)
+        private bool Open(LinkRole role)
         {
-            ILinkTransport transport = CreateNativeTransport(role, out string problem);
+            ILinkTransport transport = LinkTransportFactory.Create(role, out string problem);
             if (transport == null)
             {
                 YargLogger.LogFormatError("Link: {0}", problem);
@@ -325,10 +367,10 @@ namespace YARG.Integration.Link
 
             _session.MemberJoined += OnMemberJoined;
             _session.MemberLeft += OnMemberLeft;
-            _session.LoadSongRequested += HandleLoadSong;
+            _session.LoadSongRequested += OnLoadSongRequested;
             _session.StartScheduled += OnStartScheduled;
             _session.StartCancelled += OnStartCancelled;
-            _session.GameDataReceived += HandleGameData;
+            _session.GameDataReceived += OnGameData;
             _session.Disconnected += OnDisconnected;
             _session.PeerRefused += OnPeerRefused;
 
@@ -377,19 +419,59 @@ namespace YARG.Integration.Link
             _session = null;
             _joinTicket = null;
             _nextJoinTime = double.PositiveInfinity;
-            _lastProblem = null;
-            _remoteRequestHash = null;
-            _remoteRequestName = null;
-            _remoteSetups.Clear();
-            _paths.Clear();
-            _resendDropOuts = false;
-            EndSharedSong();
+            LastProblem = null;
+            _requests.Clear();
+            _pendingSetups.Clear();
+            _connections.Clear();
+            EndSong();
+        }
+
+        /// <summary>What we're doing and who's playing, for friends' lobbies. The session only sends changes.</summary>
+        private void UpdateLocalState()
+        {
+            if (Now < _nextStateTime) return;
+            _nextStateTime = Now + STATE_INTERVAL;
+
+            var players = new List<PlayerInfo>();
+            foreach (var player in PlayerContainer.Players)
+            {
+                if (player.SittingOut) continue;
+
+                var profile = player.Profile;
+                players.Add(new PlayerInfo
+                {
+                    Name = profile.Name,
+                    Instrument = profile.CurrentInstrument.ToString(),
+                    Difficulty = profile.CurrentDifficulty.ToString(),
+                    Bot = profile.IsBot,
+                });
+            }
+
+            _session.SetLocalState(LocalStatus(), players);
+        }
+
+        private string LocalStatus()
+        {
+            switch (GlobalVariables.Instance.CurrentScene)
+            {
+                case SceneIndex.Gameplay:
+                    if (_start.IsReady) return LinkStatus.READY;
+                    return _song is { Pause: { IsActive: true } } ? LinkStatus.PAUSED : LinkStatus.PLAYING;
+                case SceneIndex.Score:
+                    return LinkStatus.RESULTS;
+                case SceneIndex.Menu:
+                    bool choosing = _requests.IsChoosing ||
+                        MenuManager.Instance != null && MenuManager.Instance.CurrentMenu == MenuManager.Menu.DifficultySelect;
+                    return choosing ? LinkStatus.CHOOSING : LinkStatus.BROWSING;
+                default:
+                    return LinkStatus.SceneName(GlobalVariables.Instance.CurrentScene);
+            }
         }
 
         private void OnMemberJoined(LinkMember member)
         {
-            _lastProblem = null;
-            ResendDropOuts();
+            LastProblem = null;
+            _song?.Departures.ResendDropOuts();
             ToastManager.ToastInformation(member.IsHost && _session.Role == LinkRole.Join
                 ? $"Joined {member.Name}'s online session"
                 : $"{member.Name} joined the online session");
@@ -397,8 +479,8 @@ namespace YARG.Integration.Link
 
         private void OnMemberLeft(LinkMember member)
         {
-            // A friend who is on a highway right now stays there (in _songSetups), shown as stalled
-            _remoteSetups.Remove(member.Id);
+            // A friend who is on a highway right now stays there (in the song's friends), shown as stalled
+            _pendingSetups.Remove(member.Id);
 
             // A joiner who lost the host hears about that instead
             if (_session is not { IsConnected: true }) return;
@@ -435,12 +517,12 @@ namespace YARG.Integration.Link
                 };
 
                 // A joiner mid-song can't carry on without the host for long
-                OnSessionEndedInSong(disconnect.Code switch
+                _hostLoss.OnSessionEnded(_session, _song, disconnect.Code switch
                 {
                     ByeCodes.KICKED => "You were removed from the online session",
                     ByeCodes.LEFT   => "The host ended the online session",
                     _               => "Lost the online session",
-                });
+                }, Now);
 
                 Close();
                 ShowProblem(title, message);
@@ -449,9 +531,9 @@ namespace YARG.Integration.Link
 
             // A joiner keeps trying, but only says so when something changes
             _nextJoinTime = Now + REJOIN_INTERVAL;
-            if (disconnect.Reason != _lastProblem)
+            if (disconnect.Reason != LastProblem)
             {
-                _lastProblem = disconnect.Reason;
+                LastProblem = disconnect.Reason;
                 ToastManager.ToastWarning($"Lost the online session ({disconnect.Reason}). Trying to reconnect...");
             }
         }
@@ -488,33 +570,6 @@ namespace YARG.Integration.Link
             return text.EndsWith(".") ? text : text + ".";
         }
 
-        #endregion
-
-        /// <summary>
-        /// The synced pause status, a song's countdown when it lost its host, and the debug overlays
-        /// (Settings › Debug, each off by default; refer to LinkController.DebugOverlays.cs).
-        /// </summary>
-        private void OnGUI()
-        {
-            if (GlobalVariables.Instance == null) return;
-
-            DrawConnectionsDebug();
-
-            if (GlobalVariables.Instance.CurrentScene != SceneIndex.Gameplay) return;
-
-            // Even after the session ended, a song without its host shows its countdown
-            bool hostGone = DrawHostGone();
-
-            if (_shared == null || _session == null) return;
-
-            var gm = _shared.GameManager;
-            if (gm == null || !gm.IsSongStarted) return;
-
-            if (!hostGone) DrawPauseStatus();
-
-            DrawScoreBoxDebug(gm);
-        }
-
         private LinkMember FindMember(string id)
         {
             if (_session == null) return null;
@@ -524,5 +579,472 @@ namespace YARG.Integration.Link
             }
             return null;
         }
+
+        #endregion
+
+        #region Song requests and the synced start
+
+        public enum StartResult
+        {
+            /// <summary>A synced start is scheduled; call <see cref="WaitForStartTime"/>.</summary>
+            Synced,
+            /// <summary>The session is gone or took too long; start right away.</summary>
+            Alone,
+            /// <summary>The start was cancelled; return to the menu.</summary>
+            Cancelled,
+        }
+
+        private void OnLoadSongRequested(SongInfo song) => _requests.OnLoadSong(_session, song);
+
+        /// <summary>
+        /// Report that gameplay is loaded, then wait until the session schedules the start.
+        /// Called by <see cref="GameManager"/> once its own players exist.
+        /// </summary>
+        /// <remarks>
+        /// The start is scheduled a couple of seconds ahead, which leaves time to add friends' players
+        /// (<see cref="TakeRemotePlayers"/>) before <see cref="WaitForStartTime"/>.
+        /// </remarks>
+        public async UniTask<StartResult> WaitForStartSignal(GameManager gameManager, LoadingContext context)
+        {
+            var song = gameManager.Song;
+
+            // A song that's still ours (gameplay reloaded without its GameManager telling us) is over now
+            EndSong();
+            _requests.Clear();
+
+            // Forget setups for any other song
+            string hash = song.Hash.ToString();
+            var stale = new List<string>();
+            foreach (var (member, setup) in _pendingSetups)
+            {
+                if (setup.SongHash != hash) stale.Add(member);
+            }
+            foreach (var member in stale)
+            {
+                _pendingSetups.Remove(member);
+            }
+
+            // Tell friends about our players first, so they have it by the time the start is scheduled
+            var local = new InputSender(gameManager, hash);
+            _session.Send(local.CreateSetupMessage());
+            _session.ReportReady(ToSongInfo(song));
+
+            context.SetLoadingText("Waiting for other players...", song.Name.Original);
+            YargLogger.LogInfo("Link: waiting for synced start");
+
+            var result = await _start.WaitForSignal(() => _session is { IsConnected: true });
+            if (result != StartResult.Synced) return result;
+
+            // The session closed in the frame that the start arrived
+            if (_session == null)
+            {
+                _start.Abandon();
+                return StartResult.Alone;
+            }
+
+            // A host taking part sent its setup before it reported ready, so before the start reached us.
+            // Without one (it's in another song, or another play of this one), we're on our own.
+            bool hostInPlay = _session.Role == LinkRole.Join && FindHost() is { } host &&
+                _pendingSetups.TryGetValue(host.Id, out var hostSetup) && hostSetup.SongHash == hash;
+            _song = new SyncedSong(_session, local, hostInPlay);
+            return StartResult.Synced;
+        }
+
+        /// <summary>
+        /// Wait for the moment scheduled by <see cref="WaitForStartSignal"/>.
+        /// </summary>
+        public UniTask WaitForStartTime() => _start.WaitForStartTime(() => _session != null);
+
+        /// <summary>
+        /// Friends' players to add to the current song: their replay frames, plus the feeds their inputs arrive on.
+        /// </summary>
+        public List<(ReplayFrame Frame, ReplayData Data, RemoteInputFeed Feed)> TakeRemotePlayers(SongEntry song)
+        {
+            var players = new List<(ReplayFrame, ReplayData, RemoteInputFeed)>();
+            if (_song == null) return players;
+
+            string hash = song.Hash.ToString();
+            var taken = new List<string>();
+            foreach (var (member, setup) in _pendingSetups)
+            {
+                // WaitForStartSignal removed the setups for other songs. If a setup for a different song arrived
+                // after that, the friend gets no highway in this song.
+                if (setup.SongHash != hash)
+                {
+                    YargLogger.LogFormatInfo("Link: {0} sent a setup for a different song, so they have no " +
+                        "highway in this one", setup.Feeds.Count > 0 ? setup.Feeds[0].Name : member);
+                    continue;
+                }
+
+                taken.Add(member);
+                _song.Friends[member] = setup;
+
+                foreach (var feed in setup.Feeds)
+                {
+                    // The host's fail meter is the band's, so friends' players count toward it there
+                    feed.InHostBand = _song.IsHost;
+
+                    if (feed.Mirrored)
+                    {
+                        var frame = setup.Data.Frames[setup.FrameIndices[feed.Index]];
+                        frame.Profile.IsBot = feed.IsBot;
+                        players.Add((frame, setup.Data, feed));
+                    }
+                }
+            }
+
+            foreach (var member in taken)
+            {
+                _pendingSetups.Remove(member);
+            }
+
+            YargLogger.LogInfo($"Link: {_song.Friends.Count} friend setup(s) for this song, {players.Count} highway(s) to add");
+            return players;
+        }
+
+        private void OnStartScheduled(double delaySeconds) => _start.OnScheduled(delaySeconds);
+
+        private void OnStartCancelled(string reason)
+        {
+            if (_start.OnCancelled(reason)) return;
+
+            if (_requests.IsChoosing)
+            {
+                _requests.Clear();
+                ToastManager.ToastWarning($"Online start cancelled: {reason}");
+            }
+        }
+
+        private static SongInfo ToSongInfo(SongEntry song) =>
+            new(song.Hash.ToString(), song.Name.Original, song.Artist.Original);
+
+        private LinkMember FindHost()
+        {
+            if (_session == null) return null;
+            foreach (var member in _session.Members)
+            {
+                if (member.IsHost) return member;
+            }
+            return null;
+        }
+
+        #endregion
+
+        #region Game data
+
+        /// <summary>A message from a friend about a song: check it, and send it to the part that handles it.</summary>
+        private void OnGameData(LinkMember member, string kind, JObject data)
+        {
+            if (data == null) return;
+
+            try
+            {
+                var message = PlayProtocol.Decode(kind, data);
+                if (message == null) return;
+
+                switch (message)
+                {
+                    case SetupMessage setup:
+                        OnSetup(member, setup);
+                        break;
+                    case InputsMessage inputs:
+                        OnInputs(member, inputs);
+                        break;
+                    case LeftMessage left:
+                        OnFriendLeftSong(member, left);
+                        break;
+                    case FailedMessage failed:
+                        OnFriendFailed(member, failed);
+                        break;
+                    case DeclinedMessage declined:
+                        _requests.OnDeclined(member, declined);
+                        break;
+                    case PlayerFailedMessage or RevivedMessage or MeterMessage:
+                        _song?.BandMeter.OnMessage(member, (SongPlayMessage) message, Now);
+                        break;
+                    case PauseMessage pause:
+                        _song?.Pause.OnPause(member, pause, Now);
+                        break;
+                    case ResumeMessage resume:
+                        _song?.Pause.OnResume(member, resume, Now);
+                        break;
+                    case EndSongMessage endSong:
+                        if (_song != null) _hostLoss.OnEndSong(_song, member, endSong);
+                        break;
+                    case DroppedMessage dropped:
+                        if (_song != null && _song.Departures.OnDropped(member, dropped))
+                        {
+                            _hostLoss.OnDroppedUs(_song, member);
+                        }
+                        break;
+                }
+            }
+            catch (Exception e)
+            {
+                YargLogger.LogException(e, $"Link: bad {kind} data from {member.Name}");
+            }
+        }
+
+        private void OnSetup(LinkMember member, SetupMessage message)
+        {
+            var setup = RemoteSetup.From(member.Id, message);
+            _pendingSetups[member.Id] = setup;
+            YargLogger.LogInfo($"Link: got {setup.Feeds.Count} player(s) from {member.Name} for {setup.SongHash}");
+
+            // Starting again (a restart) leaves the play of theirs that's on our highways
+            if (_song != null && _song.Friends.TryGetValue(member.Id, out var current) && !current.Left)
+            {
+                current.Left = true;
+                YargLogger.LogInfo($"Link: {member.Name} started another song or play without us");
+            }
+        }
+
+        private void OnInputs(LinkMember member, InputsMessage message)
+        {
+            if (_song != null && _song.IsFromPlay(member, message))
+            {
+                _song.Friends[member.Id].Receive(message, Now);
+                _song.Clock.OnSample(member, message, Now);
+                _song.Departures.NoteInputs(member, Now);
+            }
+            else if (_pendingSetups.TryGetValue(member.Id, out var pending) && pending.IsPlay(message))
+            {
+                pending.Receive(message, Now);
+            }
+        }
+
+        /// <summary>A friend left their play of a song: the one on our highways, or one we haven't joined.</summary>
+        private void OnFriendLeftSong(LinkMember member, LeftMessage message)
+        {
+            if (_song != null && _song.IsFromPlay(member, message))
+            {
+                _song.Friends[member.Id].Left = true;
+            }
+
+            // Nobody can join a play that's over
+            if (_pendingSetups.TryGetValue(member.Id, out var pending) && pending.IsPlay(message))
+            {
+                _pendingSetups.Remove(member.Id);
+            }
+        }
+
+        private void OnFriendFailed(LinkMember member, FailedMessage message)
+        {
+            var gm = _song?.GameManager;
+            if (gm == null || !_song.IsFromPlay(member, message)) return;
+            if (!gm.IsSongStarted || gm.PlayerHasFailed) return;
+
+            YargLogger.LogInfo($"Link: {member.Name} failed the song at {message.Time:0.00}s, failing with them");
+            gm.FailFromLink();
+        }
+
+        /// <summary>
+        /// Forget the synced song we were in. Setups that were used are done with; ones still waiting for us to
+        /// join are kept.
+        /// </summary>
+        private void EndSong()
+        {
+            _song?.End();
+            _song = null;
+        }
+
+        #endregion
+
+        #region Calls from the game
+
+        /// <summary>
+        /// Our band meter ran out. Tell friends so they fail with us: once we pause, our inputs stop
+        /// and their mirror of our track would just freeze.
+        /// </summary>
+        public void ReportSongFailed(GameManager gameManager)
+        {
+            if (_song == null || _song.GameManager != gameManager) return;
+
+            YargLogger.LogInfo("Link: we failed the song, telling friends");
+            _song.Send(new FailedMessage { Time = gameManager.SongTime });
+        }
+
+        /// <summary>
+        /// Called by <see cref="GameManager"/> as it's destroyed, which is how every song ends: finished, quit,
+        /// restarted, or switched to practice. Restarting reloads gameplay without leaving it, so the scene alone
+        /// can't tell friends we've left this play of the song.
+        /// </summary>
+        public void OnSongExited(GameManager gm)
+        {
+            if (_song == null || _song.GameManager != gm) return;
+
+            YargLogger.LogInfo("Link: we left the synced song");
+            _song.Send(new LeftMessage());
+            EndSong();
+        }
+
+        /// <summary>Called by <see cref="GameManager"/> when it opens the pause menu, whatever opened it.</summary>
+        public void OnLocalPause(GameManager gm) => _song?.Pause.OnLocalPause(gm);
+
+        /// <summary>
+        /// Called by <see cref="GameManager.Resume"/>. In a synced pause, resuming marks us ready instead of
+        /// resuming, and the host resumes everyone.
+        /// </summary>
+        /// <returns>Whether we took over, so the game shouldn't resume.</returns>
+        public bool HoldResume(GameManager gm) => _song?.Pause.HoldResume(gm, Now) ?? false;
+
+        /// <summary>
+        /// Called by the pause menu's "Back To Library". When we host a synced song friends are still playing,
+        /// ask whether to take them along.
+        /// </summary>
+        /// <returns>Whether we took over (the dialog is open), so the pause menu shouldn't quit.</returns>
+        public bool OfferLeaveWithParty(GameManager gm) => HostLoss.OfferLeaveWithParty(_song, gm);
+
+        /// <summary>
+        /// The host's band meter, for <see cref="GameManager.BandHappiness"/>, or <c>null</c> when this game's own
+        /// meter is the band's.
+        /// </summary>
+        public float? HostBandHappiness(GameManager gm) => _song?.BandMeter.HostHappinessFor(gm);
+
+        /// <summary>Whether the host's meter decides when this song fails, so this game's own meter mustn't.</summary>
+        public bool IsBandMeterRemote(GameManager gm) => _song?.BandMeter.IsRemoteFor(gm) ?? false;
+
+        /// <summary>The fail meter's icons on a joiner, or <c>null</c> when this game's own meter is the band's.</summary>
+        public List<FailMeter.Marker> BandMeterMarkers(GameManager gm) => _song?.BandMeter.Markers(gm);
+
+        #endregion
+
+        #region Overlays
+
+        /// <summary>
+        /// The synced pause status, a song's countdown when it lost its host, and the debug overlays
+        /// (Settings › Debug, each off by default; refer to <see cref="LinkDebugOverlays"/>).
+        /// </summary>
+        private void OnGUI()
+        {
+            if (GlobalVariables.Instance == null) return;
+
+            _debug.DrawConnections();
+
+            if (GlobalVariables.Instance.CurrentScene != SceneIndex.Gameplay) return;
+
+            // Even after the session ended, a song without its host shows its countdown
+            bool hostGone = DrawHostGone();
+
+            if (_song == null || _session == null) return;
+
+            var gm = _song.GameManager;
+            if (gm == null || !gm.IsSongStarted) return;
+
+            if (!hostGone) DrawPauseStatus();
+
+            _debug.DrawScoreBox(_song, gm);
+        }
+
+        private GUIStyle _bannerStyle;
+
+        /// <summary>What a synced pause is waiting on, for the banner over the pause menu.</summary>
+        /// <returns><c>null</c> when no synced pause is holding the song.</returns>
+        internal string PauseStatusText()
+        {
+            var gm = _song?.GameManager;
+            if (_song == null || !_song.IsFor(gm) || !_song.Pause.IsActive) return null;
+
+            var pause = _song.Pause;
+            if (pause.ResumeAt.HasValue)
+            {
+                return "<b>Resuming together...</b>";
+            }
+
+            var text = new System.Text.StringBuilder();
+            string by = pause.PausedBy == _session.LocalMemberId ? "You"
+                : FindMember(pause.PausedBy)?.Name ?? "A friend";
+            text.Append($"<b>{Escape(by)} paused</b>");
+
+            var names = new List<string>();
+            bool waitingOnHost = false;
+            foreach (string id in pause.WaitingOn())
+            {
+                if (id == _session.LocalMemberId) continue;
+                var member = FindMember(id);
+                if (member == null) continue;
+                if (member.IsHost) waitingOnHost = true;
+                else names.Add(Escape(member.Name));
+            }
+
+            text.Append('\n');
+            if (!pause.LocalReady)
+            {
+                text.Append("Resume when you're ready. The song carries on once everyone is.");
+            }
+            else if (names.Count > 0)
+            {
+                text.Append("You're ready. Pause again if you're not.");
+            }
+            else if (waitingOnHost)
+            {
+                text.Append("Everyone's ready. Waiting for the host to resume.");
+            }
+            else
+            {
+                text.Append("Everyone's ready.");
+            }
+
+            if (names.Count > 0)
+            {
+                text.Append($"\n<color=#c0c0c0>Waiting for {string.Join(", ", names)}</color>");
+            }
+            return text.ToString();
+        }
+
+        /// <summary>The countdown over a song that lost its host, once the host has been gone a while.</summary>
+        /// <returns><c>null</c> when it isn't showing.</returns>
+        internal string HostGoneText()
+        {
+            if (_hostLoss.Countdown is not { Announced: true } countdown) return null;
+
+            int seconds = Mathf.Max(0, Mathf.CeilToInt((float) (countdown.Deadline - Now)));
+            return $"<b>{Escape(countdown.Reason)}</b>\n" +
+                $"Returning to the library in {seconds}s. You can leave now from the pause menu.";
+        }
+
+        private void DrawPauseStatus()
+        {
+            if (PauseStatusText() is { } text) DrawBanner(text, new Color(0f, 0f, 0f, 0.7f));
+        }
+
+        private bool DrawHostGone()
+        {
+            if (HostGoneText() is not { } text) return false;
+
+            DrawBanner(text, new Color(0.25f, 0f, 0f, 0.8f));
+            return true;
+        }
+
+        private void DrawBanner(string text, Color background)
+        {
+            float scale = Screen.height / 1080f;
+            _bannerStyle ??= new GUIStyle(GUI.skin.label)
+            {
+                richText = true,
+                wordWrap = false,
+                alignment = TextAnchor.MiddleCenter,
+            };
+            _bannerStyle.fontSize = Mathf.RoundToInt(24 * scale);
+
+            var content = new GUIContent(text);
+            var size = _bannerStyle.CalcSize(content);
+            float pad = 14 * scale;
+            var box = new Rect((Screen.width - size.x) / 2 - pad, 40 * scale, size.x + pad * 2, size.y + pad * 2);
+
+            var oldColor = GUI.color;
+            GUI.color = background;
+            GUI.DrawTexture(box, Texture2D.whiteTexture);
+            GUI.color = oldColor;
+            GUI.Label(new Rect(box.x + pad, box.y + pad, size.x, size.y), content, _bannerStyle);
+        }
+
+        /// <summary>
+        /// Text from a friend, made safe for a rich text label: a zero-width space after each "&lt;" stops it from
+        /// starting a tag.
+        /// </summary>
+        internal static string Escape(string text) => text?.Replace("<", "<​") ?? "";
+
+        #endregion
     }
 }
