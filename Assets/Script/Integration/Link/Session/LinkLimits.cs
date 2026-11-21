@@ -15,10 +15,18 @@ namespace YARG.Integration.Link.Session
         /// <summary>The largest message from a peer that hasn't said hello yet. A hello is far smaller.</summary>
         public const int MAX_UNADMITTED_MESSAGE_BYTES = 4 * 1024;
 
+        // The longest text of each kind that a member may send, in characters. Longer text is cut (Clamp) or
+        // refused.
+
+        /// <summary>A member ID, play ID or song hash.</summary>
         public const int MAX_ID_LENGTH     = 64;
+        /// <summary>A member's or player's name.</summary>
         public const int MAX_NAME_LENGTH   = 64;
+        /// <summary>A status, scene, instrument, difficulty, game data kind or bye code.</summary>
         public const int MAX_SHORT_LENGTH  = 32;
+        /// <summary>A song's name or artist.</summary>
         public const int MAX_SONG_TEXT     = 256;
+        /// <summary>Why a member left, or why a start was cancelled.</summary>
         public const int MAX_REASON_LENGTH = 256;
 
         /// <summary>Players one member may report. <see cref="MAX_SESSION_PLAYERS"/> also limits the total.</summary>

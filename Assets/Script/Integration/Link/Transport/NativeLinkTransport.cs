@@ -1,9 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace YARG.Integration.Link.Transport
 {
@@ -45,45 +46,31 @@ namespace YARG.Integration.Link.Transport
         /// </summary>
         public int MaxPeers = 16;
 
+        /// <summary>
+        /// Make the JSON text that <c>yl_create</c> reads (refer to yarg_link.h).
+        /// </summary>
+        /// <remarks>
+        /// The library reads its settings as one JSON object. The library refuses a member that it does not
+        /// know, and a value of the wrong type. Thus each name here must be the same as in yarg_link.h.
+        /// Newtonsoft.Json writes the text. It escapes the string values (for example a quote mark or a
+        /// backslash in <see cref="LogFilter"/>), so that the text is always valid JSON. Members with no
+        /// value (<see cref="BindAddress"/> and <see cref="LogFilter"/> when they are <c>null</c>) are not
+        /// written: then the library uses its default.
+        /// </remarks>
         internal string ToJson()
         {
-            var json = new StringBuilder("{");
-            void Add(string name, string value)
+            var json = new JObject
             {
-                if (json.Length > 1) json.Append(',');
-                json.Append('"').Append(name).Append("\":").Append(value);
-            }
-
-            Add("relay", Relay ? "true" : "false");
-            Add("address_lookup", AddressLookup ? "true" : "false");
-            if (BindAddress != null) Add("bind_addr", Quote(BindAddress));
-            Add("ticket_addrs", TicketAddresses ? "true" : "false");
-            Add("connect_timeout_ms",
-                ((long) Math.Max(1, ConnectTimeout.TotalMilliseconds)).ToString(CultureInfo.InvariantCulture));
-            if (LogFilter != null) Add("log_filter", Quote(LogFilter));
-            Add("accept", Accept ? "true" : "false");
-            Add("max_peers", Math.Max(1, MaxPeers).ToString(CultureInfo.InvariantCulture));
-            return json.Append('}').ToString();
-        }
-
-        private static string Quote(string value)
-        {
-            var quoted = new StringBuilder("\"");
-            foreach (char c in value)
-            {
-                switch (c)
-                {
-                    case '"':  quoted.Append("\\\""); break;
-                    case '\\': quoted.Append("\\\\"); break;
-                    default:
-                        if (c < 0x20)
-                            quoted.Append("\\u").Append(((int) c).ToString("x4"));
-                        else
-                            quoted.Append(c);
-                        break;
-                }
-            }
-            return quoted.Append('"').ToString();
+                ["relay"]              = Relay,
+                ["address_lookup"]     = AddressLookup,
+                ["ticket_addrs"]       = TicketAddresses,
+                ["connect_timeout_ms"] = (long) Math.Max(1, ConnectTimeout.TotalMilliseconds),
+                ["accept"]             = Accept,
+                ["max_peers"]          = Math.Max(1, MaxPeers),
+            };
+            if (BindAddress != null) json["bind_addr"] = BindAddress;
+            if (LogFilter != null) json["log_filter"] = LogFilter;
+            return json.ToString(Formatting.None);
         }
     }
 
@@ -98,10 +85,10 @@ namespace YARG.Integration.Link.Transport
     /// </remarks>
     public sealed class NativeLinkTransport : ILinkTransport
     {
-        /// <summary>The largest unreliable message (<c>YL_MAX_UNRELIABLE</c>).</summary>
+        /// <summary>The largest unreliable message, in bytes (<c>YL_MAX_UNRELIABLE</c>).</summary>
         public const int MAX_UNRELIABLE_SIZE = 1024;
 
-        /// <summary>The largest reliable message (<c>YL_MAX_RELIABLE</c>).</summary>
+        /// <summary>The largest reliable message, in bytes (<c>YL_MAX_RELIABLE</c>).</summary>
         public const int MAX_RELIABLE_SIZE = 1024 * 1024 - 1;
 
         // Copies of values in yarg_link.h. C# cannot read the header, so it has its own copies.
@@ -118,6 +105,8 @@ namespace YARG.Integration.Link.Transport
         internal const uint EVENT_MESSAGE           = 3;
         internal const uint EVENT_ERROR             = 4;
         internal const uint EVENT_LOG               = 5;
+
+        internal const uint STATS_CONNECTED = 1;
 
         internal const uint PATH_DIRECT = 1;
         internal const uint PATH_RELAY  = 2;
@@ -270,7 +259,7 @@ namespace YARG.Integration.Link.Transport
                 _ => LinkPath.Unknown,
             };
             return new PeerStats(
-                stats.Connected != 0,
+                stats.Connected == STATS_CONNECTED,
                 stats.RttMicros >= 0 ? TimeSpan.FromTicks(stats.RttMicros * 10) : (TimeSpan?) null,
                 path,
                 (long) stats.BytesSent,

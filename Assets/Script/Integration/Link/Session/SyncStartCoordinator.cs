@@ -8,10 +8,22 @@ namespace YARG.Integration.Link.Session
     /// Synced song start, as a pure state machine (no I/O, time passed in) so it can be tested.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Runs on the host. Any member can start a song; when its gameplay is loaded it reports ready. The
     /// coordinator then asks every other member who is in the menu to load the same song, waits until all of
     /// them are ready (or decline, leave, or time out), and tells everyone who is ready to start after a
     /// common lead time.
+    /// </para>
+    /// <para>
+    /// <see cref="PauseCoordinator"/> also waits until members are ready, but it is a different class on
+    /// purpose. This coordinator runs only on the host, in <see cref="LinkSession"/>, before a song. It decides
+    /// who takes part, and it can time out or let a member decline. The pause coordinator runs in every game,
+    /// in <c>LinkController</c>, during a song. It records the input time of each member, counts pauses
+    /// (<see cref="PauseCoordinator.Epoch"/>), and calculates the time to resume from. All members must resume
+    /// together, thus no member can decline or time out. The only part that the two classes have in common is
+    /// the set of ready members. A shared class for that set does not make the code smaller, and it connects
+    /// the session layer to the gameplay layer.
+    /// </para>
     /// </remarks>
     public sealed class SyncStartCoordinator
     {

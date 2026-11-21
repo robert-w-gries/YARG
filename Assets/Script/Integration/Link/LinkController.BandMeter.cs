@@ -39,7 +39,7 @@ namespace YARG.Integration.Link
         private const string KIND_REVIVED       = "revived";
         private const string KIND_METER         = "meter";
 
-        /// <summary>How often the host sends its meter's value.</summary>
+        /// <summary>How often the host sends its meter's value, in seconds.</summary>
         private const double METER_INTERVAL = 0.1;
 
         private sealed class BandMeter

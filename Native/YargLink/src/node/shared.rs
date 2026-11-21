@@ -25,13 +25,14 @@
 //!
 //! # Closing the handle
 //!
-//! The handle itself has no state machine. It is open until `Drop` of `Node` calls `close_all`,
-//! which sets `closing`. `closing` is not a peer state: it is one flag for the whole handle, and
-//! the peers still go through their own states while the handle closes.
+//! The handle itself has no state machine. It is open until `Drop` of `Node` calls
+//! `close_all_peers`, which sets `closing`. `closing` is not a peer state: it is one flag for the
+//! whole handle, and the peers still go through their own states while the handle closes.
 //!
 //! When `closing` is set, nothing new starts. Each function that adds something checks the flag:
-//! - `new_peer` adds no peer. It checks the flag under the `peers` lock, and `close_all` sets the
-//!   flag under the same lock. Thus no peer can be added after `close_all` took the peers;
+//! - `new_peer` adds no peer. It checks the flag under the `peers` lock, and `close_all_peers` sets
+//!   the flag under the same lock. Thus no peer can be added after `close_all_peers` took the
+//!   peers;
 //! - `push`, `push_log` and `push_message` queue no event, because nobody polls any more (the
 //!   handle is out of the registry).
 //!
@@ -90,7 +91,7 @@ pub enum Event {
 
 /// What `push_message` did with a message.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Pushed {
+pub(super) enum PushResult {
     /// The message is in the queue.
     Queued,
     /// The message was dropped, because the peer is not Ready (it closes now) or the handle
@@ -127,7 +128,7 @@ struct Peers {
 pub struct Shared {
     events: Mutex<Queue>,
     peers: Mutex<Peers>,
-    /// Set once, by `close_all`, when the handle starts to close. Refer to "Closing the handle".
+    /// Set once, by `close_all_peers`, when the handle starts to close. Refer to "Closing the handle".
     closing: AtomicBool,
 }
 
@@ -215,7 +216,7 @@ impl Shared {
     /// The flag is set and the peers are taken under one lock. Thus `new_peer` cannot add a peer
     /// after this, and each peer that exists is closed here. The caller must be in the runtime's
     /// context, as for `close_peer`.
-    pub(super) fn close_all(&self) -> Vec<Arc<Peer>> {
+    pub(super) fn close_all_peers(&self) -> Vec<Arc<Peer>> {
         let peers: Vec<Arc<Peer>> = {
             let mut peers = lock(&self.peers);
             self.closing.store(true, Ordering::Release);
@@ -241,23 +242,23 @@ impl Shared {
         true
     }
 
-    /// Queue a message from a peer. Refer to `Pushed` for the results.
-    pub(super) fn push_message(&self, peer: &Peer, channel: u8, data: Bytes) -> Pushed {
+    /// Queue a message from a peer. Refer to `PushResult` for the results.
+    pub(super) fn push_message(&self, peer: &Peer, channel: u8, data: Bytes) -> PushResult {
         // Hold the state lock while the message is queued, so that no message can come after the
         // peer's Disconnected event (refer to the table at the top of this file)
         let state = lock(&peer.state);
         if *state != State::Ready || self.is_closing() {
-            return Pushed::NotWanted;
+            return PushResult::NotWanted;
         }
         let mut queue = lock(&self.events);
         let backlog = queue.backlog.entry(peer.id).or_default();
         if backlog.messages >= MAX_QUEUED_MESSAGES_PER_PEER || backlog.bytes + data.len() > MAX_QUEUED_BYTES_PER_PEER {
-            return Pushed::Full;
+            return PushResult::Full;
         }
         backlog.messages += 1;
         backlog.bytes += data.len();
         queue.events.push_back(Event::Message(peer.id, channel, data));
-        Pushed::Queued
+        PushResult::Queued
     }
 
     /// Close a peer and queue `Disconnected`, exactly once. A second call does nothing.

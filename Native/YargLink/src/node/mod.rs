@@ -274,7 +274,7 @@ impl Node {
     }
 
     /// The statistics of peer `id`, or `None` if the peer is not connected now: it is unknown,
-    /// still connecting, or closed. `yl_peer_stats` gives `connected = 0` for `None`.
+    /// still connecting, or closed. `yl_peer_stats` gives `YL_STATS_NOT_CONNECTED` for `None`.
     ///
     /// The byte counts are of all UDP packets of the connection, with QUIC's own acknowledgements
     /// and keepalives. The path and round-trip time are of the path that QUIC uses now.
@@ -300,7 +300,7 @@ fn replace_default_sockets(builder: Builder, addr: SocketAddr) -> Result<Builder
 
 impl Drop for Node {
     /// Close the handle. The steps, in this order:
-    /// 1. `close_all`: set `closing`, and close each peer gracefully. A graceful close does not
+    /// 1. `close_all_peers`: set `closing`, and close each peer gracefully. A graceful close does not
     ///    cut the connection. It puts `Write::Finish` in the peer's writer channel, behind the
     ///    reliable messages that the game sent before `yl_destroy` (its goodbye). The channel is
     ///    first in, first out, and one task writes it, so the goodbye goes out before the finish.
@@ -316,7 +316,7 @@ impl Drop for Node {
         tracing::dispatcher::with_default(&self.dispatch, || {
             let peers = {
                 let _guard = runtime.enter();
-                self.shared.close_all()
+                self.shared.close_all_peers()
             };
 
             // Let the goodbyes go out, so friends see us leave right away (and why)

@@ -28,7 +28,7 @@ use tracing::{debug, info};
 
 use super::{
     peer::{CloseReason, Peer, Write, path_name, selected_path},
-    shared::{CLOSE_CODE, CLOSE_REASON_LEFT, Event, Pushed, Shared},
+    shared::{CLOSE_CODE, CLOSE_REASON_LEFT, Event, PushResult, Shared},
     wire::{ALPN, FrameKind, MAX_RELIABLE_FRAME, hello_as_host, hello_as_joiner, read_frame},
 };
 use crate::{YL_CHANNEL_RELIABLE, YL_CHANNEL_UNRELIABLE};
@@ -128,6 +128,11 @@ async fn connect_incoming(incoming: Incoming) -> Result<Established, String> {
 
 /// Accept incoming connections, within the limits: at most `max_peers` peers (with the ones in
 /// their handshake), and at most `MAX_PENDING_INCOMING` in their handshake at once.
+///
+/// `Node::new` starts this loop only when the config has `accept`. The config is read one time, in
+/// `yl_create`, and no function changes it after that. Thus `accept` cannot change while this loop
+/// runs: a handle accepts connections for all of its life, or never (then `refuse_loop` runs
+/// instead). To change `accept`, the game makes a new handle.
 pub async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, timeout: Duration, max_peers: usize) {
     // One permit for each connection in its handshake. Refer to `admit`.
     let handshakes = Arc::new(Semaphore::new(MAX_PENDING_INCOMING));
@@ -140,6 +145,7 @@ pub async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>, timeout: Durat
             // answer at once, and does not wait for its timeout. Do not stop the loop or close the
             // endpoint here. Drop closes the endpoint when the goodbyes on the open connections
             // are out, and then `accept()` gives None and the loop ends.
+            debug!("refusing an incoming connection: the handle closes");
             incoming.refuse();
             continue;
         }
@@ -315,8 +321,8 @@ async fn read_loop(shared: &Shared, peer: &Peer, mut recv: RecvStream) -> CloseR
         };
         match frame.kind {
             FrameKind::Data => match shared.push_message(peer, YL_CHANNEL_RELIABLE, Bytes::from(frame.payload)) {
-                Pushed::Queued | Pushed::NotWanted => {}
-                Pushed::Full => return CloseReason::Flooded,
+                PushResult::Queued | PushResult::NotWanted => {}
+                PushResult::Full => return CloseReason::Flooded,
             },
             // Each side sends one hello, in the handshake. A second hello is not correct
             FrameKind::Hello => return CloseReason::Failed("peer sent a second hello".into()),
@@ -333,7 +339,7 @@ async fn datagram_loop(shared: &Shared, peer: &Peer, conn: &Connection) -> Close
             Ok(data) => data,
             Err(e) => return CloseReason::Failed(describe(&e)),
         };
-        if shared.push_message(peer, YL_CHANNEL_UNRELIABLE, data) == Pushed::Full {
+        if shared.push_message(peer, YL_CHANNEL_UNRELIABLE, data) == PushResult::Full {
             debug!(peer = peer.id, "datagram dropped: too many waiting");
         }
     }

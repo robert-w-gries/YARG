@@ -41,23 +41,25 @@ namespace YARG.Integration.Link
         public const string STATUS_PAUSED = "paused";
 
         /// <summary>
-        /// How far ahead the host schedules a resume, which has to cover the trip to every joiner and the
+        /// How far ahead the host schedules a resume, in seconds, which has to cover the trip to every joiner and the
         /// rewind animation.
         /// </summary>
         private const double RESUME_LEAD = 1.5;
 
-        /// <summary>The longest lead we accept from a host, so a bad value can't hold us paused for long.</summary>
+        /// <summary>
+        /// The longest lead we accept from a host, in seconds, so a bad value can't hold us paused for long.
+        /// </summary>
         private const double MAX_RESUME_LEAD = 10.0;
 
         /// <summary>
-        /// How long the resume's rewind animation runs before the song plays (<c>SongRunner.RewindAndResume</c>),
-        /// so it can start this early and finish on time.
+        /// How long the resume's rewind animation runs before the song plays, in seconds
+        /// (<c>SongRunner.RewindAndResume</c>), so it can start this early and finish on time.
         /// </summary>
         private const double REWIND_ANIMATION = 0.5;
 
         /// <summary>
-        /// Ignore friends' clocks for this long after a synced resume: their first inputs messages can still
-        /// carry the paused time.
+        /// Ignore friends' clocks for this long after a synced resume, in seconds: their first inputs messages
+        /// can still carry the paused time.
         /// </summary>
         private const double CLOCK_HOLD_AFTER_RESUME = 1.0;
 
