@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using YARG.Core.Input;
 using YARG.Core.Logging;
+using YARG.Integration.Link.Play;
 
 namespace YARG.Integration.Link
 {
@@ -17,8 +18,11 @@ namespace YARG.Integration.Link
     /// </remarks>
     public class RemoteInputFeed
     {
-        /// <summary>The feed counts as stalled after this long without data, in seconds.</summary>
-        public const double STALL_SECONDS = 3.0;
+        /// <summary>
+        /// The feed counts as stalled after this long without data, in seconds: the friend has lost the
+        /// connection (<see cref="DepartureTracker.INPUTS_SILENCE"/>).
+        /// </summary>
+        public const double STALL_SECONDS = DepartureTracker.INPUTS_SILENCE;
 
         /// <summary>
         /// Received inputs waiting to be played. Gameplay drains them every frame; a friend who sends inputs

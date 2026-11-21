@@ -603,7 +603,7 @@ Phase 4 notes (2026-11-15):
 - **Connection quality:** "Direct · 34 ms" / "Relay · 120 ms" in the lobby (orange above 150 ms) and next
   to each friend in the in-game scoreboard. Joiners only connect to the host, so other joiners show
   "Through the host".
-- **Band fail meter** (`LinkController.BandMeter.cs`): see [Band fail meter](#band-fail-meter).
+- **Band fail meter** (`Song/BandMeterSync.cs`): see [Band fail meter](#band-fail-meter).
 - **Tested:** 3 new session tests, run on both transports (state through the roster, kick, left vs
   lost), and refusal codes checked in the existing ones. All of `Tests/YARG.Link.Tests` passes. Unity 6000.3.5f2 compiles with no errors. In a
   batch-mode Editor (via the `unity` CLI and Pipeline `script run`) the real game drove the lobby
@@ -678,7 +678,7 @@ Phase 5 notes (2026-11-17):
 - **Pause on focus loss.** Pausing online pauses the whole band, so online play has its own setting,
   "Pause On Focus Loss in Online Mode" (off by default). The normal setting is ignored while the link is
   enabled.
-- **Leaving a song and losing the host** (`LinkController.HostLoss.cs`). The host's Back to Library asks
+- **Leaving a song and losing the host** (`Song/HostLoss.cs`). The host's Back to Library asks
   whether to leave with the party (`endsong`, every joiner goes back to the library) or alone. The host
   drops out a friend who left the song or whose inputs stopped for 5 s and tells everyone (`dropped`);
   a dropped friend returns to the library, even if they reconnect. A joiner whose host left the song,
@@ -780,7 +780,7 @@ the song, and the host's no fail setting is the one that counts.
   Quitting and settings in the pause menu only affect the local game; a friend who quits to the menu
   stops being waited for, and the others carry on without them.
 - **Each play of a song is separate.** Every message about a synced song carries a play ID
-  (`SharedSong.PlayId`) next to the song hash, and a game sends `left` when its `GameManager` is destroyed.
+  (`InputSender.PlayId`) next to the song hash, and a game sends `left` when its `GameManager` is destroyed.
   Messages from another play of the same song are ignored, so a game that reloads gameplay (which the
   hidden options above did) can't mix with friends' songs. Restarting together isn't supported.
 - **Revives near the fail moment can disagree by a fraction of a second.** Mirrors run about 150 ms behind
@@ -788,7 +788,7 @@ the song, and the host's no fail setting is the one that counts.
   plain star power on another. Fails, saves and scores stay with the host and each player's own game;
   only a mirrored highway's star power display can be briefly wrong.
 - **Vocals and pro guitar players aren't mirrored.** Their `setup` entry has no replay frame (`frame: -1`,
-  from `LinkController.CanMirror`), so friends' games make no highway or engine for them. They still show in
+  from `InputSender.CanMirror`), so friends' games make no highway or engine for them. They still show in
   the lobby and play normally on their own game. The reasons differ:
   - *Pro guitar* has no replay support in YARG.Core: `ReplayFrame` can't serialize its engine parameters
     and stats ("Stat creation not implemented"). Fixing it is a Core change (see
@@ -837,7 +837,7 @@ maintainers' go-ahead. Each one names the workaround in YARG that it would repla
    - Band bonus then depends on data that isn't in the replay. A replay or `ReplayAnalyzer` run would
      not give the same band bonus unless the replay also records the external count over time.
 3. **Replay support for pro guitar.** `ReplayFrame` can't serialize pro guitar engine parameters and
-   stats ("Stat creation not implemented"), so `LinkController.CanMirror` doesn't mirror pro guitar.
+   stats ("Stat creation not implemented"), so `InputSender.CanMirror` doesn't mirror pro guitar.
    The same gap affects normal replays. Any new game mode needs the same support before it can be
    mirrored.
 4. **Bounds checks in the replay reader.** The replay reader trusts the lengths and counts in the
