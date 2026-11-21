@@ -96,7 +96,7 @@ Examine these items:
 1. It hosts, joins, leaves and removes members.
 2. When a member selects a song, the other members get `load_song` with the song hash. A member without the song, or not in the menu, declines it.
 3. During a song, each game sends `setup` one time. Then it sends `inputs` 30 to 120 times each second.
-4. It shows the scores of the friends with IMGUI (`OnGUI`).
+4. It shows a banner at the top of the screen (`LinkBanner`, a uGUI canvas made in code) for a synced pause and for a song that lost its host. The scores of the friends are in the normal score box.
 
 Examine these items:
 
@@ -104,7 +104,7 @@ Examine these items:
 - **Messages:** The game data about songs are typed classes in `Play/PlayMessages.cs` (`PlayProtocol`). Each class checks the values from a friend in `Check`, before a handler gets the message. The wire format did not change in the restructure.
 - **Modes:** `CanMirror` does not send vocals or pro guitar. The plan gives the causes.
 - **Leave and host loss:** `Song/HostLoss.cs` and `Song/Departures.cs`. When the host selects Back to Library, the host can leave with the party (`endsong`) or leave alone. The host removes a friend that left the song or that sent no inputs for 5 s (`dropped`). A joiner without a host shows a countdown and goes back to the library. There is no host migration.
-- **Debug overlays:** Two IMGUI boxes are debugging aids, off by default: Settings › Debug › Online link score box values (the values of this game against the values in the score box, for each player) and Online link connections (the health of each connection). The band's score and stars are in the normal score box. The old scoreboard overlay was removed, because these two boxes show all of its data.
+- **Debug overlays:** Two IMGUI boxes (`LinkDebugOverlays`) are debugging aids, off by default. The component is enabled only while one of them is on, so the game makes no IMGUI calls without them: Settings › Debug › Online link score box values (the values of this game against the values in the score box, for each player) and Online link connections (the health of each connection). The band's score and stars are in the normal score box. The old scoreboard overlay was removed, because these two boxes show all of its data.
 
 ### 7. Friends' tracks
 

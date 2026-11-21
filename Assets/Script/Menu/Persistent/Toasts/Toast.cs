@@ -26,6 +26,9 @@ namespace YARG.Menu.Persistent
         [SerializeField]
         private CanvasGroup _canvasGroup;
 
+        /// <summary>The font of the toast's message, for other overlays that should look the same.</summary>
+        public TMP_FontAsset MessageFont => _message != null ? _message.font : null;
+
         private bool _canInteract;
         private Coroutine _coroutine;
         private Action _onClick;
