@@ -58,6 +58,7 @@ namespace YARG.Link.Tests
                 ("YL_LOG_INFO", (long) NativeLogLevel.Info),
                 ("YL_LOG_DEBUG", (long) NativeLogLevel.Debug),
                 ("YL_LOG_TRACE", (long) NativeLogLevel.Trace),
+                ("YL_STATS_CONNECTED", NativeLinkTransport.STATS_CONNECTED),
                 ("YL_PATH_DIRECT", NativeLinkTransport.PATH_DIRECT),
                 ("YL_PATH_RELAY", NativeLinkTransport.PATH_RELAY),
             };

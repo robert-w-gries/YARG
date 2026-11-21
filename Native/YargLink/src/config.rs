@@ -84,7 +84,8 @@ pub struct Config {
     pub ticket_addrs: bool,
     pub connect_timeout: Duration,
     pub log_filter: String,
-    /// Accept incoming connections. Only a game that hosts sets this.
+    /// Accept incoming connections. Only a game that hosts sets this. It is fixed for the life of
+    /// the handle (refer to `conn::accept_loop`).
     pub accept: bool,
     /// The most peers at once, with the incoming connections that are still in their handshake.
     pub max_peers: usize,

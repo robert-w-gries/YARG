@@ -61,7 +61,7 @@ namespace YARG.Integration.Link
         /// </summary>
         private const double JUMP_COOLDOWN = 10.0;
 
-        /// <summary>How often to log sync diagnostics during a song.</summary>
+        /// <summary>How often to log sync diagnostics during a song, in seconds.</summary>
         private const double SYNC_LOG_INTERVAL = 5.0;
 
         /// <summary>Clock offset estimates for directly connected members, by member ID.</summary>
@@ -208,19 +208,6 @@ namespace YARG.Integration.Link
             {
                 YargLogger.LogInfo($"Link sync at {gm.InputTime:0.0}s:{text}");
             }
-        }
-
-        /// <summary>Short sync status for a friend's scoreboard row, or <c>null</c>.</summary>
-        private string SyncDetail(RemoteInputFeed feed)
-        {
-            if (!feed.HasData) return null;
-
-            string detail = $"hits +{feed.Lag * 1000:0} ms";
-            if (_clocks.TryGetValue(feed.Member, out var clock) && clock.HasEstimate)
-            {
-                detail += $" · clock {clock.Offset * 1000:+0;-0;0} ms";
-            }
-            return detail;
         }
 
         private LinkMember FindHost()

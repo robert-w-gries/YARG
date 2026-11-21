@@ -433,7 +433,13 @@ namespace YARG.Playback
         /// </summary>
         /// <remarks>
         /// <para>
-        /// Online play uses this method. All games start the song at the same scheduled time. After the start,
+        /// Only online play uses this method now, through <c>GameManager.ShiftInputTime</c>
+        /// (<c>GameManager.Online.cs</c>). That method is the online entry point, and it does nothing when the
+        /// song is not online play. This method stays in <see cref="SongRunner"/>, because it changes the private
+        /// anchor of the input timeline, and it does not use online state. Thus a different feature can use it.
+        /// </para>
+        /// <para>
+        /// All games in online play start the song at the same scheduled time. After the start,
         /// the clock of each game drifts by some milliseconds. The start time is only as accurate as the
         /// round-trip estimate. Also, each computer has a different frame rate and audio device.
         /// </para>
@@ -445,11 +451,12 @@ namespace YARG.Playback
         /// <para>
         /// The joiner measures the difference to the song clock of the host. When the difference is 10 ms or
         /// more, it starts to call this method each frame with a step of a maximum of 2% of the frame time
-        /// (<c>LinkController.CorrectClock</c>). It stops when the difference is less than 3 ms. A seek (<see cref="SetSongTime"/>) corrects the difference
-        /// immediately. But a seek restarts the audio, and the player hears a jump. A small step changes only
-        /// the anchor of the input timeline. The audio synchronizer then corrects the audio, as it does for all
-        /// other drift. Only when the difference is 0.5 s or more does the joiner seek once instead
-        /// (<c>GameManager.JumpInputTime</c>), because small steps would take too long.
+        /// (<c>LinkController.CorrectClock</c>). It stops when the difference is less than 3 ms. A seek
+        /// (<see cref="SetSongTime"/>) corrects the difference immediately. But a seek restarts the audio, and
+        /// the player hears a jump. A small step changes only the anchor of the input timeline. The audio
+        /// synchronizer then corrects the audio, as it does for all other drift. Only when the difference is
+        /// 0.5 s or more does the joiner seek once instead (<c>GameManager.JumpInputTime</c>), because small
+        /// steps would take too long.
         /// </para>
         /// <para>This method has no effect during a pause or before the start.</para>
         /// </remarks>

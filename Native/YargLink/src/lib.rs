@@ -77,6 +77,9 @@ pub const YL_LOG_INFO: u32 = 3;
 pub const YL_LOG_DEBUG: u32 = 4;
 pub const YL_LOG_TRACE: u32 = 5;
 
+pub const YL_STATS_NOT_CONNECTED: u32 = 0;
+pub const YL_STATS_CONNECTED: u32 = 1;
+
 pub const YL_PATH_UNKNOWN: u32 = 0;
 pub const YL_PATH_DIRECT: u32 = 1;
 pub const YL_PATH_RELAY: u32 = 2;
@@ -125,7 +128,13 @@ pub struct YlStats {
 impl YlStats {
     /// The statistics of a peer that is not connected now: unknown, still connecting, or closed.
     const NOT_CONNECTED: YlStats =
-        YlStats { connected: 0, path: YL_PATH_UNKNOWN, rtt_us: RTT_NOT_MEASURED, bytes_sent: 0, bytes_received: 0 };
+        YlStats {
+            connected: YL_STATS_NOT_CONNECTED,
+            path: YL_PATH_UNKNOWN,
+            rtt_us: RTT_NOT_MEASURED,
+            bytes_sent: 0,
+            bytes_received: 0,
+        };
 }
 
 /// The live handles. The key is the number that the handle pointer holds.
@@ -558,7 +567,7 @@ pub unsafe extern "C" fn yl_peer_stats(h: *mut YlHandle, peer: u32, out: *mut Yl
         }
         let c_stats = match node(h)?.stats(peer) {
             Some(stats) => YlStats {
-                connected: 1,
+                connected: YL_STATS_CONNECTED,
                 path: stats.path,
                 rtt_us: stats.rtt.map_or(RTT_NOT_MEASURED, micros),
                 bytes_sent: stats.bytes_sent,

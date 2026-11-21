@@ -26,7 +26,7 @@ C# paths start at `Assets/Script/`. Line counts are added lines, without `.meta`
 | 3 | C# transport | C# interop | `Integration/Link/Transport/`, `NativeLinkLibrary.cs`, `Tests/YARG.Link.Tests/MemoryLinkTransport.cs` | 870 + 750 tests |
 | 4 | Session protocol | Network protocols | `Integration/Link/Session/` | 1,940 + 1,000 tests |
 | 5 | Replay data from peers | YARG.Core replays | `ReplayBlobCheck.cs` | 300 + 260 tests |
-| 6 | Online controller | Gameplay | `LinkController.cs`, `LinkController.PauseSync.cs`, `LinkController.HostLoss.cs`, `RemoteInputFeed.cs` | 2,900 |
+| 6 | Online controller | Gameplay | `LinkController*.cs` (13 partial files), `RemoteInputFeed.cs` | 2,900 |
 | 7 | Friends' tracks | Track, player, visuals | `Gameplay/Player/*`, `TrackElements/*`, `YargPlayer.cs`, `GameManager.Loading.cs` | 250 |
 | 8 | Scores and band fail meter | Engine, scores | `GameManager.cs`, `FailMeter.cs`, `LinkController.BandMeter.cs` | 350 |
 | 9 | Song time and synced start | Audio, playback | `SongRunner.cs`, `LinkController.ClockSync.cs`, `GameManager.Loading.cs` | 300 |
@@ -100,10 +100,10 @@ Examine these items:
 
 Examine these items:
 
-- **Size:** `LinkController.cs` has 1,802 lines. The partial files for pause sync, host loss, the band meter and the clock sync have 1,510 more. Must the class be divided more before the merge?
+- **Size:** `LinkController` is divided into 13 partial files, one for each responsibility: the transport, the session status, the synced start, song requests, game data, the shared song, the setups of friends, pause sync, host loss, the band meter, the clock sync and the debug overlays. `LinkController.cs` has the lifecycle and the session events (530 lines). `LinkSession` is divided in the same way: peers and admission, messages and the roster, and the synced start.
 - **Modes:** `CanMirror` does not send vocals or pro guitar. The plan gives the causes.
 - **Leave and host loss:** `LinkController.HostLoss.cs`. When the host selects Back to Library, the host can leave with the party (`endsong`) or leave alone. The host removes a friend that left the song or that sent no inputs for 5 s (`dropped`). A joiner without a host shows a countdown and goes back to the library. There is no host migration.
-- **Scoreboard:** The IMGUI scoreboard is a debugging aid, off by default (Settings › Debug › Online link scoreboard, shown while the link is enabled). The band's score and stars are in the normal score box.
+- **Debug overlays:** Two IMGUI boxes are debugging aids, off by default: Settings › Debug › Online link score box values (the values of this game against the values in the score box, for each player) and Online link connections (the health of each connection). The band's score and stars are in the normal score box. The old scoreboard overlay was removed, because these two boxes show all of its data.
 
 ### 7. Friends' tracks
 

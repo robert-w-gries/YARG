@@ -24,10 +24,10 @@ namespace YARG.Integration.Link
     /// </remarks>
     public static class LinkLobby
     {
-        /// <summary>How often the open lobby checks for changes.</summary>
+        /// <summary>How often the open lobby checks for changes, in seconds.</summary>
         private const float REFRESH_INTERVAL = 0.5f;
 
-        /// <summary>Longest text from the clipboard that we'll offer to join with.</summary>
+        /// <summary>Longest text from the clipboard that we'll offer to join with, in characters.</summary>
         private const int MAX_TICKET_LENGTH = 4096;
 
         private static ListDialog _dialog;
