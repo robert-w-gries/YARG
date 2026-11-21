@@ -80,7 +80,7 @@ namespace YARG.Integration.Link
         {
             SceneIndex.Menu        => LinkSession.SCENE_MENU,
             SceneIndex.Gameplay    => SCENE_GAMEPLAY,
-            SceneIndex.Score       => "score",
+            SceneIndex.Score       => LinkSession.SCENE_SCORE,
             SceneIndex.Calibration => "calibration",
             _                      => scene.ToString().ToLowerInvariant(),
         };

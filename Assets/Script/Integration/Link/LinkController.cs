@@ -632,6 +632,9 @@ namespace YARG.Integration.Link
                 _pendingSetups.Remove(member);
             }
 
+            // Hold for the start before reporting ready: a host that's the last one ready gets it inside ReportReady
+            _start.Begin();
+
             // Tell friends about our players first, so they have it by the time the start is scheduled
             var local = new InputSender(gameManager, hash);
             _session.Send(local.CreateSetupMessage());

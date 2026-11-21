@@ -32,7 +32,7 @@ namespace YARG.Integration.Link.Session
         {
             public readonly string Member;
 
-            /// <summary>In the menu, i.e. able to be asked to load a song.</summary>
+            /// <summary>In the menu or on the score screen, i.e. able to be asked to load a song.</summary>
             public readonly bool InMenu;
 
             public Present(string member, bool inMenu)
@@ -158,7 +158,7 @@ namespace YARG.Integration.Link.Session
                     }
                     else
                     {
-                        // Mid-song or on the score screen
+                        // Mid-song, or somewhere else that can't take a song (calibration, say)
                         _pending.Out.Add(x.Member);
                     }
                 }

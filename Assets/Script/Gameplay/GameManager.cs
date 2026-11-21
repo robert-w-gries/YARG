@@ -459,6 +459,13 @@ namespace YARG.Gameplay
 
         public void Pause(bool showMenu = true)
         {
+            // A player's pause (focus loss, Start, Escape, a device disconnect) while holding for an online start
+            // would reach nobody and leave us out of step with friends from the first note
+            if (showMenu && IsBeforeOnlineStart)
+            {
+                return;
+            }
+
             _songRunner.Pause();
             PauseCore(showMenu);
 

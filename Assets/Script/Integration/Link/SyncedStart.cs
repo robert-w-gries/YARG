@@ -26,15 +26,23 @@ namespace YARG.Integration.Link
         public bool IsReady => _waiting && !_startAt.HasValue;
 
         /// <summary>
-        /// Wait until the session schedules the start, it's cancelled, or <paramref name="isConnected"/> says the
-        /// session is gone.
+        /// Start holding for the start. Call this before reporting ready: when we're the host and the last one
+        /// ready, the session schedules the start inside <c>ReportReady</c>, and <see cref="OnScheduled"/> drops
+        /// a start that arrives while we aren't waiting.
         /// </summary>
-        public async UniTask<LinkController.StartResult> WaitForSignal(Func<bool> isConnected)
+        public void Begin()
         {
             _waiting = true;
             _startAt = null;
             _cancelReason = null;
+        }
 
+        /// <summary>
+        /// Wait until the session schedules the start, it's cancelled, or <paramref name="isConnected"/> says the
+        /// session is gone. <see cref="Begin"/> must come first.
+        /// </summary>
+        public async UniTask<LinkController.StartResult> WaitForSignal(Func<bool> isConnected)
+        {
             double deadline = LinkController.Now + MAX_WAIT_SECONDS;
             while (true)
             {

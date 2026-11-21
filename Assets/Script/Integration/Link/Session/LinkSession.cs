@@ -19,6 +19,12 @@ namespace YARG.Integration.Link.Session
     {
         public const string SCENE_MENU = "menu";
 
+        /// <summary>
+        /// The score screen. A member there can still be asked to load a song: the game takes them back to the
+        /// menu for it, so finishing a song doesn't leave them behind.
+        /// </summary>
+        public const string SCENE_SCORE = "score";
+
         /// <summary>How often <see cref="OnTick"/> runs, in seconds.</summary>
         private const double TICK_INTERVAL = 1.0;
 

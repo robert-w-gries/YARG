@@ -1,5 +1,6 @@
 // pattern: Imperative Shell
 
+using System.Collections.Generic;
 using Cysharp.Threading.Tasks;
 using TMPro;
 using UnityEngine;
@@ -38,7 +39,7 @@ namespace YARG.Menu.Dialogs
 
         protected virtual NavigationScheme GetNavigationScheme()
         {
-            return new NavigationScheme(new()
+            var entries = new List<NavigationScheme.Entry>
             {
                 new NavigationScheme.Entry(MenuAction.Up, "Menu.Common.Up",
                     ctx => NavigationGroup.SelectPrevious(ctx.IsRepeat)),
@@ -46,11 +47,38 @@ namespace YARG.Menu.Dialogs
                     ctx => NavigationGroup.SelectNext(ctx.IsRepeat)),
                 new NavigationScheme.Entry(MenuAction.Green, "Menu.Common.Confirm",
                     () => NavigationGroup.ConfirmSelection()),
-            }, null);
+            };
+
+            if (_backAction != null)
+            {
+                var back = _backAction;
+                entries.Add(new NavigationScheme.Entry(MenuAction.Red, "Menu.Common.Back", () => back()));
+            }
+
+            return new NavigationScheme(entries, null);
+        }
+
+        // What the red button (Back) does, if anything. Dialogs have no Back by default.
+        private UnityAction _backAction;
+
+        /// <summary>
+        /// Let the red button (Back) do <paramref name="action"/> in this dialog, for example close it. Call it right
+        /// after showing the dialog: it replaces the navigation scheme that the dialog pushed when it opened.
+        /// Dialogs that override <see cref="GetNavigationScheme"/> ignore it.
+        /// </summary>
+        public void SetBackAction(UnityAction action)
+        {
+            _backAction = action;
+            if (!IsOpen) return;
+
+            Navigator.Instance.PopScheme();
+            Navigator.Instance.PushSchemeImmediate(GetNavigationScheme());
         }
 
         private void OnDisable()
         {
+            // The dialog object is reused, and the next use may not want a Back
+            _backAction = null;
             Navigator.Instance.PopScheme();
         }
 

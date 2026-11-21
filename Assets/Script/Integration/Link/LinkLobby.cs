@@ -44,6 +44,7 @@ namespace YARG.Integration.Link
             if (dialogs == null || dialogs.IsDialogShowing || Controller == null) return;
 
             _dialog = dialogs.ShowList(Title());
+            _dialog.SetBackAction(CloseIfOpen);
             _shown = null;
             Fill();
         }
@@ -293,6 +294,7 @@ namespace YARG.Integration.Link
             dialog.ClearButtons();
             dialog.AddDialogButton("Menu.Common.Cancel", MenuData.Colors.CancelButton,
                 () => ReopenAfterDialog(null).Forget());
+            dialog.SetBackAction(() => ReopenAfterDialog(null).Forget());
             dialog.AddDialogButton("Menu.Link.RemoveAndNewCode", MenuData.Colors.ConfirmButton,
                 () => ReopenAfterDialog(() => Controller.KickAndChangeCode(member)).Forget());
             dialog.AddDialogButton("Menu.Link.Remove", MenuData.Colors.ConfirmButton,
