@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -40,6 +41,9 @@ namespace YARG.Menu.Persistent
         private Sprite _iconInformation;
         [SerializeField]
         private Sprite _iconError;
+
+        /// <summary>The font of a toast's message, for other overlays that should look the same.</summary>
+        public TMP_FontAsset MessageFont => _toastPrefab != null ? _toastPrefab.MessageFont : null;
 
         private static readonly Queue<ToastInfo> _toastQueue = new();
         private static readonly QueueBuffer<ToastInfo> _toastHistory = new(50);
