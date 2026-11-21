@@ -81,6 +81,16 @@ namespace YARG.Gameplay
         /// </remarks>
         public bool IsOnlinePlay { get; private set; }
 
+        // Loaded, and holding on the loading screen for the online session to schedule the start
+        private bool _holdingForOnlineStart;
+
+        /// <summary>
+        /// A pause now would reach nobody: the song is (or may be) online play, but it hasn't started, and
+        /// <c>PauseSync</c> shares pauses only once it has. Pausing would leave this game out of step with
+        /// friends from the first note, so a pause before the start is ignored.
+        /// </summary>
+        private bool IsBeforeOnlineStart => (IsOnlinePlay || _holdingForOnlineStart) && !IsSongStarted;
+
         /// <summary>
         /// The online controller in online play, else <c>null</c>. Use this property, not
         /// <see cref="LinkController.Instance"/>. Thus all calls to the link have the same condition.
@@ -116,7 +126,17 @@ namespace YARG.Gameplay
                 return true;
             }
 
-            var result = await link.WaitForStartSignal(this, context);
+            LinkController.StartResult result;
+            _holdingForOnlineStart = true;
+            try
+            {
+                result = await link.WaitForStartSignal(this, context);
+            }
+            finally
+            {
+                _holdingForOnlineStart = false;
+            }
+
             switch (result)
             {
                 case LinkController.StartResult.Synced:

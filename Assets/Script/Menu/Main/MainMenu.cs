@@ -48,10 +48,7 @@ namespace YARG.Menu.Main
 
         private void OnEnable()
         {
-            if (_onlineEntry != null)
-            {
-                _onlineEntry.SetActive(LinkController.IsEnabled);
-            }
+            UpdateOnlineEntry();
 
             // Set navigation scheme
             _ = Navigator.Instance.PushScheme(new NavigationScheme(new()
@@ -63,9 +60,26 @@ namespace YARG.Menu.Main
             }, true));
         }
 
+        /// <remarks>
+        /// The settings menu opens over this one without disabling it, so <see cref="OnEnable"/> alone would
+        /// miss the setting being toggled there.
+        /// </remarks>
+        private void Update()
+        {
+            UpdateOnlineEntry();
+        }
+
         private void OnDisable()
         {
             Navigator.Instance?.PopScheme();
+        }
+
+        private void UpdateOnlineEntry()
+        {
+            if (_onlineEntry != null && _onlineEntry.activeSelf != LinkController.IsEnabled)
+            {
+                _onlineEntry.SetActive(LinkController.IsEnabled);
+            }
         }
 
         public void CurrentlyPlaying()

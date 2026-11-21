@@ -39,14 +39,16 @@ namespace YARG.Integration.Link.Session
         {
             var present = new List<SyncStartCoordinator.Present>
             {
-                new(LocalMemberId, _localScene == SCENE_MENU),
+                new(LocalMemberId, CanLoadSong(_localScene)),
             };
             foreach (var member in _members.Values)
             {
-                present.Add(new SyncStartCoordinator.Present(member.Id, member.Scene == SCENE_MENU));
+                present.Add(new SyncStartCoordinator.Present(member.Id, CanLoadSong(member.Scene)));
             }
             return present;
         }
+
+        private static bool CanLoadSong(string scene) => scene is SCENE_MENU or SCENE_SCORE;
 
         private void Apply(List<SyncStartCoordinator.Action> actions)
         {

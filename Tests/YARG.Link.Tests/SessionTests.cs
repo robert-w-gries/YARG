@@ -169,6 +169,30 @@ namespace YARG.Link.Tests
         }
 
         [Test]
+        public void MembersOnTheScoreScreenAreAskedToo()
+        {
+            var (host, a, b) = ThreeMembers();
+            var song = new SongInfo("abc", "Song", "Artist");
+
+            // Host and B are still on the score screen of the last song when A picks the next one
+            host.Session.SetLocalScene(LinkSession.SCENE_SCORE);
+            b.Session.SetLocalScene(LinkSession.SCENE_SCORE);
+            PumpUntil(() => host.Session.Members.Single(m => m.Name == "B").Scene == LinkSession.SCENE_SCORE);
+
+            a.Session.SetLocalScene("gameplay");
+            a.Session.ReportReady(song);
+            PumpUntil(() => host.LoadRequests.Count == 1 && b.LoadRequests.Count == 1);
+
+            // They're waited on, not left out
+            Assert.That(a.Starts, Is.Empty);
+            host.Session.SetLocalScene("gameplay");
+            host.Session.ReportReady(song);
+            b.Session.SetLocalScene("gameplay");
+            b.Session.ReportReady(song);
+            PumpUntil(() => host.Starts.Count == 1 && a.Starts.Count == 1 && b.Starts.Count == 1);
+        }
+
+        [Test]
         public void DeclineAndLeavingDoNotBlockTheStart()
         {
             var (host, a, b) = ThreeMembers();
