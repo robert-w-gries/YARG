@@ -103,6 +103,7 @@ namespace YARG.Integration.Link
         private readonly HostLoss      _hostLoss = new();
         private readonly ConnectionLog _connections = new();
         private LinkDebugOverlays _debug;
+        private LinkBanner        _banner;
 
         // Friends' latest player setups not yet added to a song, by member ID: kept for us to join
         private readonly Dictionary<string, RemoteSetup> _pendingSetups = new();
@@ -162,12 +163,17 @@ namespace YARG.Integration.Link
 
         private void Awake()
         {
-            _debug = new LinkDebugOverlays(this);
+            _debug = LinkDebugOverlays.Create(this);
+            _banner = LinkBanner.Create(transform);
         }
 
         private void Update()
         {
             if (GlobalVariables.Instance == null) return;
+
+            // The debug panels use IMGUI, which costs every frame, so the component only runs while one is on
+            bool debug = LinkDebugOverlays.AnyEnabled;
+            if (_debug.enabled != debug) _debug.enabled = debug;
 
             if (!IsEnabled)
             {
@@ -224,6 +230,8 @@ namespace YARG.Integration.Link
             {
                 _song.Local.Update(_session, Now);
             }
+
+            UpdateBanner();
         }
 
         private void OnDestroy()
@@ -912,35 +920,32 @@ namespace YARG.Integration.Link
         #region Overlays
 
         /// <summary>
-        /// The synced pause status, a song's countdown when it lost its host, and the debug overlays
-        /// (Settings › Debug, each off by default; refer to <see cref="LinkDebugOverlays"/>).
+        /// The banner over a song: a song's countdown when it lost its host (even after the session ended), or
+        /// what a synced pause is waiting on.
         /// </summary>
-        private void OnGUI()
+        private void UpdateBanner()
         {
-            if (GlobalVariables.Instance == null) return;
+            if (GlobalVariables.Instance == null || !IsEnabled ||
+                GlobalVariables.Instance.CurrentScene != SceneIndex.Gameplay)
+            {
+                _banner.Hide();
+                return;
+            }
 
-            _debug.DrawConnections();
+            if (HostGoneText() is { } hostGone)
+            {
+                _banner.Show(hostGone, LinkBanner.Style.Warning);
+                return;
+            }
 
-            if (GlobalVariables.Instance.CurrentScene != SceneIndex.Gameplay) return;
-
-            // Even after the session ended, a song without its host shows its countdown
-            bool hostGone = DrawHostGone();
-
-            if (_song == null || _session == null) return;
-
-            var gm = _song.GameManager;
-            if (gm == null || !gm.IsSongStarted) return;
-
-            if (!hostGone) DrawPauseStatus();
-
-            _debug.DrawScoreBox(_song, gm);
+            var gm = _song?.GameManager;
+            bool inSong = _session != null && gm != null && gm.IsSongStarted;
+            _banner.Show(inSong ? PauseStatusText() : null, LinkBanner.Style.Info);
         }
-
-        private GUIStyle _bannerStyle;
 
         /// <summary>What a synced pause is waiting on, for the banner over the pause menu.</summary>
         /// <returns><c>null</c> when no synced pause is holding the song.</returns>
-        internal string PauseStatusText()
+        private string PauseStatusText()
         {
             var gm = _song?.GameManager;
             if (_song == null || !_song.IsFor(gm) || !_song.Pause.IsActive) return null;
@@ -994,7 +999,7 @@ namespace YARG.Integration.Link
 
         /// <summary>The countdown over a song that lost its host, once the host has been gone a while.</summary>
         /// <returns><c>null</c> when it isn't showing.</returns>
-        internal string HostGoneText()
+        private string HostGoneText()
         {
             if (_hostLoss.Countdown is not { Announced: true } countdown) return null;
 
@@ -1003,47 +1008,11 @@ namespace YARG.Integration.Link
                 $"Returning to the library in {seconds}s. You can leave now from the pause menu.";
         }
 
-        private void DrawPauseStatus()
-        {
-            if (PauseStatusText() is { } text) DrawBanner(text, new Color(0f, 0f, 0f, 0.7f));
-        }
-
-        private bool DrawHostGone()
-        {
-            if (HostGoneText() is not { } text) return false;
-
-            DrawBanner(text, new Color(0.25f, 0f, 0f, 0.8f));
-            return true;
-        }
-
-        private void DrawBanner(string text, Color background)
-        {
-            float scale = Screen.height / 1080f;
-            _bannerStyle ??= new GUIStyle(GUI.skin.label)
-            {
-                richText = true,
-                wordWrap = false,
-                alignment = TextAnchor.MiddleCenter,
-            };
-            _bannerStyle.fontSize = Mathf.RoundToInt(24 * scale);
-
-            var content = new GUIContent(text);
-            var size = _bannerStyle.CalcSize(content);
-            float pad = 14 * scale;
-            var box = new Rect((Screen.width - size.x) / 2 - pad, 40 * scale, size.x + pad * 2, size.y + pad * 2);
-
-            var oldColor = GUI.color;
-            GUI.color = background;
-            GUI.DrawTexture(box, Texture2D.whiteTexture);
-            GUI.color = oldColor;
-            GUI.Label(new Rect(box.x + pad, box.y + pad, size.x, size.y), content, _bannerStyle);
-        }
-
         /// <summary>
         /// Text from a friend, made safe for a rich text label: a zero-width space after each "&lt;" stops it from
         /// starting a tag.
         /// </summary>
-        internal static string Escape(string text) => text?.Replace("<", "<​") ?? "";
+        private static string Escape(string text) => text?.Replace("<", "<\u200B") ?? "";
 
         #endregion
     }

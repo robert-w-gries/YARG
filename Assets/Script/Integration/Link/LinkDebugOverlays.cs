@@ -13,6 +13,10 @@ namespace YARG.Integration.Link
     /// Debug overlays for online play, each behind its own setting in Settings › Debug (off by default):
     /// </summary>
     /// <remarks>
+    /// These panels are debugging aids, so they are drawn with IMGUI. The component is enabled only while one
+    /// of the settings is on (<see cref="AnyEnabled"/>), so without them Unity makes no IMGUI calls for it.
+    /// </remarks>
+    /// <remarks>
     /// <list type="bullet">
     /// <item><b>Score box values</b> (<see cref="SettingsManager.SettingContainer.LinkDebugScoreBox"/>): this
     /// game's own values next to the ones the score box and fail meter show, which come from the whole band
@@ -24,7 +28,7 @@ namespace YARG.Integration.Link
     /// scene while a session is open.</item>
     /// </list>
     /// </remarks>
-    internal sealed class LinkDebugOverlays
+    internal sealed class LinkDebugOverlays : MonoBehaviour
     {
         /// <summary>
         /// A reported meter value and our own differ by more than this before the panel highlights it. The meter
@@ -40,7 +44,7 @@ namespace YARG.Integration.Link
         private const string WARN  = "#ffd060";
         private const string BAD   = "#ff8080";
 
-        private readonly LinkController _link;
+        private LinkController _link;
 
         private GUIStyle _debugPanelStyle;
 
@@ -56,9 +60,30 @@ namespace YARG.Integration.Link
             public double ReceivedPerSecond;
         }
 
-        public LinkDebugOverlays(LinkController link)
+        public static LinkDebugOverlays Create(LinkController link)
         {
-            _link = link;
+            var overlays = link.gameObject.AddComponent<LinkDebugOverlays>();
+            overlays._link = link;
+            overlays.enabled = AnyEnabled;
+            return overlays;
+        }
+
+        /// <summary>Whether any of the debug overlays is on in the settings.</summary>
+        public static bool AnyEnabled => ShowScoreBoxDebug || ShowConnectionsDebug;
+
+        private void OnGUI()
+        {
+            if (_link == null || GlobalVariables.Instance == null) return;
+
+            DrawConnections();
+
+            if (GlobalVariables.Instance.CurrentScene != SceneIndex.Gameplay) return;
+
+            var song = _link.Song;
+            var gm = song?.GameManager;
+            if (_link.CurrentSession == null || gm == null || !gm.IsSongStarted) return;
+
+            DrawScoreBox(song, gm);
         }
 
         private static double Now => LinkController.Now;
@@ -69,7 +94,7 @@ namespace YARG.Integration.Link
         #region Score box values
 
         /// <summary>The score box values panel, on the right below the score box.</summary>
-        public void DrawScoreBox(SyncedSong song, GameManager gm)
+        private void DrawScoreBox(SyncedSong song, GameManager gm)
         {
             if (!ShowScoreBoxDebug) return;
 
@@ -245,7 +270,7 @@ namespace YARG.Integration.Link
         #region Connections
 
         /// <summary>The connection health panel, at the top left.</summary>
-        public void DrawConnections()
+        private void DrawConnections()
         {
             var session = _link.CurrentSession;
             if (!ShowConnectionsDebug || session == null) return;
