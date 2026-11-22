@@ -217,12 +217,20 @@ namespace YARG.Integration.Link.Play
                 player.Name = LinkLimits.Clamp(player.Name, LinkLimits.MAX_NAME_LENGTH);
                 player.Instrument = LinkLimits.Clamp(player.Instrument, LinkLimits.MAX_SHORT_LENGTH);
                 player.Difficulty = LinkLimits.Clamp(player.Difficulty, LinkLimits.MAX_SHORT_LENGTH);
+                if (player.StarCutoffs is { } cutoffs &&
+                    (cutoffs.Length != SetupPlayer.STAR_CUTOFF_COUNT || Array.Exists(cutoffs, c => c < 0)))
+                {
+                    player.StarCutoffs = null;
+                }
             }
         }
     }
 
     public sealed class SetupPlayer
     {
+        /// <summary>The number of star score cutoffs of a player (one for each star, gold stars included).</summary>
+        public const int STAR_CUTOFF_COUNT = 6;
+
         public string Name;
 
         /// <summary>
@@ -239,6 +247,13 @@ namespace YARG.Integration.Link.Play
 
         /// <summary>The player's frame in <see cref="SetupMessage.Replay"/>, or -1 for no highway.</summary>
         public int Frame = -1;
+
+        /// <summary>
+        /// The player's star score cutoffs. Friends add them to the band's cutoffs, also for a player that has no
+        /// highway there. <c>null</c> when the sender didn't send them, or they weren't sane.
+        /// </summary>
+        [JsonProperty("stars")]
+        public int[] StarCutoffs;
     }
 
     /// <summary>
@@ -305,6 +320,10 @@ namespace YARG.Integration.Link.Play
         public float Stars;
         public int   NotesHit;
         public int   TotalNotes;
+
+        /// <summary>The player's star power is active. Friends count it in the band's star power multiplier.</summary>
+        [JsonProperty("sp")]
+        public bool  StarPower;
     }
 
     /// <summary>

@@ -65,6 +65,12 @@ namespace YARG.Integration.Link
             return mode is not (GameMode.Vocals or GameMode.ProGuitar);
         }
 
+        private static int[] StarCutoffs(BasePlayer player)
+        {
+            var cutoffs = player.BaseEngine?.StarScoreThresholds;
+            return cutoffs is { Length: SetupPlayer.STAR_CUTOFF_COUNT } ? (int[]) cutoffs.Clone() : null;
+        }
+
         public SetupMessage CreateSetupMessage()
         {
             var frames = new List<ReplayFrame>();
@@ -108,6 +114,7 @@ namespace YARG.Integration.Link
                     Instrument = profile.CurrentInstrument.ToString(),
                     Difficulty = profile.CurrentDifficulty.ToString(),
                     Frame = frameIndex,
+                    StarCutoffs = StarCutoffs(player),
                 });
             }
 
@@ -186,6 +193,7 @@ namespace YARG.Integration.Link
                     Stars = player.Stars,
                     NotesHit = player.NotesHit,
                     TotalNotes = player.BaseStats.TotalNotes,
+                    StarPower = player.BaseStats.IsStarPowerActive,
                 });
             }
 

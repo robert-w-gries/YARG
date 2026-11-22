@@ -142,7 +142,8 @@ namespace YARG.Gameplay.HUD
             if (_bandComboObject.activeSelf)             {
                 _bandComboUnits = GameManager.Players.Min(e => e.BaseStats.BandComboUnits);
             }
-            _singlePlayer = GameManager.Players.Count == 1;
+            // In an online session, the band has friends, and the multiplier counts their star power
+            _singlePlayer = GameManager.Players.Count == 1 && !GameManager.IsOnlinePlay;
         }
 
         private void Update()
@@ -207,14 +208,16 @@ namespace YARG.Gameplay.HUD
 
         private void UpdateBandMultiplier()
         {
-            if (GameManager.BandMultiplier == _bandMultiplier)
+            // In an online session, the whole band's multiplier, friends included
+            int multiplier = GameManager.ScoreBoxMultiplier;
+            if (multiplier == _bandMultiplier)
             {
                 return;
             }
 
-            var show = GameManager.BandMultiplier > 1 && !_singlePlayer;
-            _bandMultiplier = GameManager.BandMultiplier;
-            _bandMultiplierText.SetTextFormat("{0}x", GameManager.BandMultiplier);
+            var show = multiplier > 1 && !_singlePlayer;
+            _bandMultiplier = multiplier;
+            _bandMultiplierText.SetTextFormat("{0}x", multiplier);
 
             if (show)
             {

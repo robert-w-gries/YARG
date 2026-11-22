@@ -759,15 +759,13 @@ the song, and the host's no fail setting is the one that counts.
 
 ## Known limitations (call out in the MVP write-up)
 
-- **Scores can drift with star power.** `EngineManager` can't register an engine for the fail meter
-  alone. With friends' engines in the host's main manager, they also count toward its star power band
-  multiplier and unisons. A client's star power raises the host's multiplier, but the host's star
-  power doesn't raise the client's, because the client's game doesn't share them. Fails and saves stay
-  correct on both games. Band bonus differs when star power overlaps: the host's own players get band
-  bonus from friends' star power and a client's players get none. Each game still shows the same
-  numbers for everyone: the score box, the score screen header and friends' score cards use the score
-  and band bonus that each player's own game reports. The fix needs YARG.Core (see
-  [YARG.Core follow-up work](#yargcore-follow-up-work), item 1).
+- **Band star power is set from outside YARG.Core.** Each game counts its own players' star power and
+  the star power that friends report in the `inputs` message (`sp`), and gives that multiplier to its
+  engines before each player updates (`GameManager.ApplyOnlineBandMultiplier`). Thus every game gives
+  band bonus from the whole band and shows the same multiplier. Friends' star power arrives a network
+  delay late, and a replay doesn't have it. On the host, friends' engines still take part in its
+  unisons. A cleaner fix needs YARG.Core (see [YARG.Core follow-up work](#yargcore-follow-up-work),
+  items 1 and 2).
 - **Online play hides the menu options that would leave friends behind.** When friends are in the session,
   gameplay sets `GameManager.IsOnlinePlay` when the synced start is scheduled, and the pause, fail and quick
   settings menus hide Restart, Practice, Skip and the no fail options (`GenericPause.BuildOnlineOptions`,
@@ -828,11 +826,12 @@ maintainers' go-ahead. Each one names the workaround in YARG that it would repla
 
    With this change, friends no longer give band bonus on any game. Every game then agrees, and online
    play gives no band bonus between games.
-2. **Count friends' star power in the band multiplier (after item 1).** To give band bonus across
-   games as local multiplayer does, a local engine's band multiplier must also count the friends who
-   have star power active. Their own game reports this. For example, an
-   `EngineManager.ExternalStarPowerCount` that `BandMultiplier` adds to `_starpowerCount`, set from a
-   new field in the `inputs` message. Open points for the maintainers:
+2. **Count friends' star power in the band multiplier.** YARG does this today from outside
+   YARG.Core: `GameManager.ApplyOnlineBandMultiplier` sets each engine's band multiplier from local
+   star power plus the `sp` field of friends' `inputs` messages, before each player updates. In YARG.Core,
+   this could be an `EngineManager.ExternalStarPowerCount` that `BandMultiplier` adds to
+   `_starpowerCount`. Then `EngineManager` would not overwrite the value when a local star power
+   changes in the middle of an engine update. Open points for the maintainers:
    - The reported state arrives about a network delay late, so the bonus starts and ends a little late.
    - Band bonus then depends on data that isn't in the replay. A replay or `ReplayAnalyzer` run would
      not give the same band bonus unless the replay also records the external count over time.

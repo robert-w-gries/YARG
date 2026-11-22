@@ -61,6 +61,14 @@ namespace YARG.Integration.Link
         public float Stars    { get; private set; }
         public int   NotesHit { get; private set; }
         public int   TotalNotes { get; private set; }
+        /// <summary>The friend's star power is active. It counts in the band's star power multiplier.</summary>
+        public bool  StarPowerActive { get; private set; }
+
+        /// <summary>
+        /// The player's star score cutoffs, from the friend's setup, or <c>null</c> if the friend didn't send
+        /// them. The band's star cutoffs include them.
+        /// </summary>
+        public int[] StarCutoffs { get; }
 
         public bool HasData => !double.IsNegativeInfinity(_watermark);
 
@@ -97,8 +105,9 @@ namespace YARG.Integration.Link
         private double _lastPlaybackTime = double.NegativeInfinity;
 
         public RemoteInputFeed(string member, int index, string name, string instrument, string difficulty,
-            bool mirrored, bool isBot = false)
+            bool mirrored, bool isBot = false, int[] starCutoffs = null)
         {
+            StarCutoffs = starCutoffs;
             IsBot = isBot;
             Member = member;
             Index = index;
@@ -142,8 +151,10 @@ namespace YARG.Integration.Link
             _watermark = Math.Max(_watermark, inputTime);
         }
 
-        public void SetStats(int score, int bandBonus, int combo, float stars, int notesHit, int totalNotes)
+        public void SetStats(int score, int bandBonus, int combo, float stars, int notesHit, int totalNotes,
+            bool starPowerActive)
         {
+            StarPowerActive = starPowerActive;
             Score = score;
             BandBonus = bandBonus;
             Combo = combo;
