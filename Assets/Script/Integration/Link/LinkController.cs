@@ -918,6 +918,22 @@ namespace YARG.Integration.Link
         /// <summary>The fail meter's icons on a joiner, or <c>null</c> when this game's own meter is the band's.</summary>
         public List<FailMeter.Marker> BandMeterMarkers(GameManager gm) => _song?.BandMeter.Markers(gm);
 
+        /// <summary>
+        /// The feeds of all friends' players in the song of <paramref name="gm"/>, with or without a highway. The
+        /// band score, stars and star power multiplier count all of them.
+        /// </summary>
+        public List<RemoteInputFeed> FriendFeeds(GameManager gm)
+        {
+            var feeds = new List<RemoteInputFeed>();
+            if (_song == null || _song.GameManager != gm) return feeds;
+
+            foreach (var setup in _song.Friends.Values)
+            {
+                feeds.AddRange(setup.Feeds);
+            }
+            return feeds;
+        }
+
         #endregion
 
         #region Overlays

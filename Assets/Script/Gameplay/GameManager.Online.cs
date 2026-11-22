@@ -46,17 +46,27 @@ namespace YARG.Gameplay
     /// <item>
     ///   <term>The score and stars of the band</term>
     ///   <description>No game is the authority. Each game adds the live score of its own players to the sent
-    ///   scores of the friends' players (<see cref="UpdateOnlineBandScore"/>). It calculates the stars from the
-    ///   cutoffs of all players. All games show the same total. The values of friends arrive after the network
-    ///   delay. Only the score box and the header of the score screen show this total. Saved scores and
-    ///   <see cref="BandScore"/> contain only the players of this game.</description>
+    ///   scores of all friends' players, with or without a highway here (<see cref="UpdateOnlineBandScore"/>).
+    ///   It calculates the stars from the cutoffs of all players. Friends send their cutoffs in their setup
+    ///   (<see cref="RemoteInputFeed.StarCutoffs"/>). All games show the same total. The values of friends
+    ///   arrive after the network delay. Only the score box and the header of the score screen show this total.
+    ///   Saved scores and <see cref="BandScore"/> contain only the players of this game.</description>
     /// </item>
     /// <item>
-    ///   <term>Band combo, star power multiplier and unisons</term>
+    ///   <term>The star power multiplier of the band</term>
+    ///   <description>No game is the authority. Each game counts the star power of its own players and the
+    ///   sent star power of all friends' players (<see cref="ApplyOnlineBandMultiplier"/>). It gives that
+    ///   multiplier to the engines of this game. Thus the band bonus of each player comes from the star power of
+    ///   the whole band, and the score box of all games shows the same multiplier. Friends' star power arrives
+    ///   after the network delay. A replay of this game does not have the friends, so its band bonus can be
+    ///   lower than the saved score.</description>
+    /// </item>
+    /// <item>
+    ///   <term>Band combo and unisons</term>
     ///   <description>Each game, for its own players only. On a joiner, the players of each friend have an
     ///   <see cref="EngineManager"/> of their own (<see cref="EngineManagerFor"/>). On the host, the friends'
-    ///   players use the main <see cref="EngineManager"/>. Thus, on the host, friends' players also change the
-    ///   band bonus. A YARG.Core change is necessary to remove this difference.</description>
+    ///   players use the main <see cref="EngineManager"/>. A YARG.Core change is necessary to remove this
+    ///   difference.</description>
     /// </item>
     /// <item>
     ///   <term>The fail meter of the band, player fails and revives</term>
@@ -106,6 +116,12 @@ namespace YARG.Gameplay
         // screen use these values. The value is null when the song is not online play.
         private EngineManager _onlineBand;
 
+        // The feeds of all friends' players, with or without a highway. Empty when the song is not online play.
+        private List<RemoteInputFeed> _friendFeeds = new();
+
+        // The star power multiplier of the whole band. The value is null when the song is not online play.
+        private int? _onlineBandMultiplier;
+
         #region Loading
 
         /// <summary>
@@ -142,6 +158,7 @@ namespace YARG.Gameplay
                 case LinkController.StartResult.Synced:
                     IsOnlinePlay = true;
                     CreateRemotePlayers(link.TakeRemotePlayers(Song));
+                    _friendFeeds = link.FriendFeeds(this);
                     return true;
 
                 case LinkController.StartResult.Alone:
@@ -300,14 +317,37 @@ namespace YARG.Gameplay
         public float ScoreBoxStars => _onlineBand?.Stars ?? BandStars;
 
         /// <summary>
-        /// Calculate the star cutoffs of the band from all players that have a highway. The score and the
-        /// cutoffs do not include friends' players that have no highway (vocals, pro guitar).
+        /// The band multiplier that the score box shows. It is <see cref="BandMultiplier"/>. In online play, it
+        /// comes from the star power of all players in the band.
+        /// </summary>
+        public int ScoreBoxMultiplier => _onlineBandMultiplier ?? BandMultiplier;
+
+        /// <summary>
+        /// Calculate the star cutoffs of the band from all players: the players of this game, and all friends'
+        /// players. A friend's player with a highway uses the cutoffs of its mirror engine (they follow a
+        /// difficulty change). A friend's player without a highway (vocals, pro guitar) uses the cutoffs from
+        /// the friend's setup.
         /// </summary>
         private void UpdateOnlineBandCutoffs()
         {
+            var cutoffs = _players.Select(p => p.BaseEngine.StarScoreThresholds).ToList();
+            foreach (var feed in _friendFeeds)
+            {
+                if (feed.Mirrored && _players.Any(p => p.Player.RemoteFeed == feed)) continue;
+
+                if (feed.StarCutoffs != null)
+                {
+                    cutoffs.Add(feed.StarCutoffs);
+                }
+                else
+                {
+                    YargLogger.LogWarning($"Link: no star cutoffs for {feed.Name}'s {feed.Instrument}, the band " +
+                        "stars leave them out");
+                }
+            }
+
             _onlineBand ??= new EngineManager();
-            _onlineBand.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(
-                _players.Select(p => p.BaseEngine.StarScoreThresholds).ToList());
+            _onlineBand.StarScoreThresholds = EngineManager.GetStarScoreCutoffs(cutoffs);
             _onlineBand.ResetStars();
 
             YargLogger.LogFormatDebug("Online band star score thresholds: {0}",
@@ -316,22 +356,49 @@ namespace YARG.Gameplay
 
         /// <summary>
         /// Calculate the score of the band. The score is <paramref name="localScore"/> (the players of this game)
-        /// plus the score and band bonus that the game of each friend sends for its players. All games do this
-        /// calculation. The host is not the authority for it.
+        /// plus the score and band bonus that the game of each friend sends for each of its players, with or
+        /// without a highway here. All games do this calculation. The host is not the authority for it.
         /// </summary>
         private void UpdateOnlineBandScore(int localScore)
         {
             int friendsScore = 0;
-            foreach (var player in _players)
+            foreach (var feed in _friendFeeds)
             {
-                if (player.Player.RemoteFeed is { } feed)
-                {
-                    friendsScore += feed.Score + feed.BandBonus;
-                }
+                friendsScore += feed.Score + feed.BandBonus;
             }
 
             _onlineBand.Score = localScore + friendsScore;
             _onlineBand.UpdateStars();
+        }
+
+        /// <summary>
+        /// Give the engines of this game the star power multiplier of the whole band: the players of this game
+        /// with star power active, and the friends' players whose game sent that their star power is active.
+        /// Call before each player updates. The <see cref="EngineManager"/> of a player sets its own multiplier
+        /// when the star power of one of its players changes, so this method sets it again.
+        /// </summary>
+        private void ApplyOnlineBandMultiplier()
+        {
+            int active = 0;
+            foreach (var player in _players)
+            {
+                if (!player.IsRemote && player.BaseStats.IsStarPowerActive) active++;
+            }
+            foreach (var feed in _friendFeeds)
+            {
+                if (feed.StarPowerActive) active++;
+            }
+
+            // The same formula as EngineManager.BandMultiplier
+            int multiplier = Math.Max(active * 2, 1);
+            _onlineBandMultiplier = multiplier;
+            foreach (var player in _players)
+            {
+                if (player.BaseStats.BandMultiplier != multiplier)
+                {
+                    player.BaseEngine.UpdateBandMultiplier(multiplier);
+                }
+            }
         }
 
         /// <summary>

@@ -348,6 +348,12 @@ namespace YARG.Gameplay
             int totalScore = 0;
             foreach (var player in _players)
             {
+                // Online play: the star power multiplier of the whole band. Refer to GameManager.Online.cs.
+                if (IsOnlinePlay)
+                {
+                    ApplyOnlineBandMultiplier();
+                }
+
                 player.GameplayUpdate();
 
                 // The band score of this game does not include friends' players. Refer to GameManager.Online.cs.

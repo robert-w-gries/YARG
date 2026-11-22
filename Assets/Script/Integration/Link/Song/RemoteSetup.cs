@@ -62,7 +62,7 @@ namespace YARG.Integration.Link
 
                 setup.FrameIndices.Add(mirrored ? player.Frame : -1);
                 setup.Feeds.Add(new RemoteInputFeed(member, i, player.Name ?? "Friend", player.Instrument ?? "",
-                    player.Difficulty ?? "", mirrored, player.Bot));
+                    player.Difficulty ?? "", mirrored, player.Bot, player.StarCutoffs));
             }
             return setup;
         }
@@ -86,7 +86,7 @@ namespace YARG.Integration.Link
 
                 var feed = Feeds[player.Index];
                 feed.SetStats(player.Score, player.BandBonus, player.Combo, player.Stars, player.NotesHit,
-                    player.TotalNotes);
+                    player.TotalNotes, player.StarPower);
 
                 inputs.Clear();
                 foreach (var input in decoded)

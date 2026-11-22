@@ -26,7 +26,7 @@ namespace YARG.Link.Tests
                 Players = new List<PlayerInputs>
                 {
                     new() { Index = 1, From = 7, Inputs = new byte[16], Score = 100, BandBonus = 5, Combo = 2,
-                        Stars = 1.5f, NotesHit = 9, TotalNotes = 10 },
+                        Stars = 1.5f, NotesHit = 9, TotalNotes = 10, StarPower = true },
                 },
             });
 
@@ -34,7 +34,8 @@ namespace YARG.Link.Tests
                 Is.EquivalentTo(new[] { "song", "play", "seq", "time", "clock", "players" }));
             var player = (JObject) json["players"]![0];
             Assert.That(player.Properties().Select(p => p.Name), Is.EquivalentTo(new[]
-                { "i", "from", "inputs", "score", "bonus", "combo", "stars", "notesHit", "totalNotes" }));
+                { "i", "from", "inputs", "score", "bonus", "combo", "stars", "notesHit", "totalNotes", "sp" }));
+            Assert.That((bool) player["sp"], Is.True);
             Assert.That((string) player["inputs"], Is.EqualTo(Convert.ToBase64String(new byte[16])));
         }
 
@@ -157,6 +158,26 @@ namespace YARG.Link.Tests
             Assert.That(setup.Players[0].Name, Has.Length.EqualTo(LinkLimits.MAX_NAME_LENGTH));
             Assert.That(setup.Players[0].Frame, Is.EqualTo(-1), "a player without a frame has no highway");
             Assert.That(setup.Replay, Is.EqualTo(new byte[] { 1, 2 }));
+            Assert.That(setup.Players[0].StarCutoffs, Is.Null, "an older friend sends no star cutoffs");
+        }
+
+        [Test]
+        public void SetupStarCutoffsMustBeSane()
+        {
+            var good = new[] { 1, 2, 3, 4, 5, 6 };
+            var setup = RoundTrip(new SetupMessage
+            {
+                Song = SONG, Play = PLAY, Replay = new byte[1],
+                Players = new List<SetupPlayer>
+                {
+                    new() { StarCutoffs = good },
+                    new() { StarCutoffs = new[] { 1, 2, 3 } },
+                    new() { StarCutoffs = new[] { 1, 2, 3, 4, 5, -6 } },
+                },
+            });
+            Assert.That(setup.Players[0].StarCutoffs, Is.EqualTo(good));
+            Assert.That(setup.Players[1].StarCutoffs, Is.Null, "the wrong number of cutoffs");
+            Assert.That(setup.Players[2].StarCutoffs, Is.Null, "a negative cutoff");
         }
 
         [Test]
