@@ -254,6 +254,14 @@ namespace YARG.Gameplay.Player
             UpdateVisuals(GameManager.VisualTime);
         }
 
+        /// <summary>
+        /// Online: a friend whose player this mirrors has left the song or lost their connection. Drop the
+        /// player out. This method has no effect on a player of this game.
+        /// </summary>
+        public virtual void DropOutRemote()
+        {
+        }
+
         protected abstract void UpdateVisuals(double visualTime);
         protected abstract void ResetVisuals();
         public abstract void Rewind(double visualTime);

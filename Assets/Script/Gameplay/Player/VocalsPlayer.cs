@@ -81,8 +81,43 @@ namespace YARG.Gameplay.Player
 
         private SongChart _chart;
 
+        /// <summary>
+        /// A friend's needle is hidden when their newest inputs are older than this, in seconds: their connection
+        /// stalled, so their engine (and needle) stopped moving.
+        /// </summary>
+        private const double REMOTE_NEEDLE_MAX_LAG = 1.0;
+
+        /// <summary>
+        /// Extra time a friend's needle stays up after their last pitch, in seconds. Their engine runs only as far
+        /// as their game's input time when it sent, and a mic input has its capture time, which is up to a mic
+        /// period older. Without this slack, a gap in their inputs hides the needle while they still sing.
+        /// </summary>
+        private const double REMOTE_SING_SLACK = 0.1;
+
+        /// <summary>
+        /// Whether this player's needle, HUD card and percussion track show on the vocal track. Always true,
+        /// except in online play for a friend whose vocals mode (solo or harmony) differs from the track's, or who
+        /// dropped out. Their engine still runs, so their score and the band's fail meter stay correct.
+        /// </summary>
+        public bool ShownOnTrack { get; private set; } = true;
+
+        /// <summary>
+        /// The time that <see cref="_lastSingTime"/> and <see cref="_lastHitTime"/> use. A friend's engine runs a
+        /// network delay behind the song (<see cref="BasePlayer.EngineLag"/>), so their needle follows the time of
+        /// their engine. If it followed our input time, the needle would flicker whenever their inputs arrive in a
+        /// burst.
+        /// </summary>
+        private double SingClock => IsRemote ? Engine.CurrentTime : GameManager.InputTime;
+
+        /// <param name="sourceTrack">
+        /// The vocals track to take this player's notes from, instead of <paramref name="chart"/>'s. Online play
+        /// gives each friend's player a clean copy, because local players apply their modifiers to the chart's
+        /// track itself.
+        /// </param>
+        /// <param name="shownOnTrack">Refer to <see cref="ShownOnTrack"/>.</param>
         public void Initialize(int index, int vocalIndex, YargPlayer player, SongChart chart,
-            VocalsPlayerHUD hud, VocalPercussionTrack percussionTrack, int? lastHighScore, float trackSpeed)
+            VocalsPlayerHUD hud, VocalPercussionTrack percussionTrack, int? lastHighScore, float trackSpeed,
+            VocalsTrack sourceTrack = null, bool shownOnTrack = true)
         {
             if (IsInitialized)
             {
@@ -91,12 +126,17 @@ namespace YARG.Gameplay.Player
 
             base.Initialize(index, player, chart, lastHighScore);
 
+            ShownOnTrack = shownOnTrack;
+
             bool isHarmony = player.Profile.CurrentInstrument is Instrument.Harmony or Instrument.PartyVocals;
             int partIndex = player.Profile.HarmonyIndex;
             _partColor = player.ColorProfile.Vocals
                 .GetPartColor(partIndex, isHarmony)
                 .ToUnityColor();
-            GameManager.VocalTrack.AssignPartColor(player);
+            if (ShownOnTrack)
+            {
+                GameManager.VocalTrack.AssignPartColor(player);
+            }
 
             // Save the chart
             _chart = chart;
@@ -114,7 +154,7 @@ namespace YARG.Gameplay.Player
 
             // Get the notes from the specific harmony or solo part
 
-            var multiTrack = chart.GetVocalsTrack(Player.Profile.CurrentInstrument);
+            var multiTrack = sourceTrack ?? chart.GetVocalsTrack(Player.Profile.CurrentInstrument);
 
             if (Player.Profile.CurrentInstrument == Instrument.PartyVocals)
             {
@@ -204,6 +244,44 @@ namespace YARG.Gameplay.Player
                 Engine.SetSpeed(GameManager.SongSpeed);
             }
 
+            if (!ShownOnTrack)
+            {
+                HideFromTrack();
+            }
+        }
+
+        /// <summary>
+        /// Online: a friend whose player this mirrors has left the song or lost their connection. Their inputs
+        /// stopped, so their engine would freeze; drop them out instead, whoever is left.
+        /// </summary>
+        public override void DropOutRemote()
+        {
+            if (!IsRemote || !IsActive)
+            {
+                return;
+            }
+
+            IsFc = false;
+
+            Player.IsScoreValid = false;
+            Player.DropOut();
+            GameManager.EngineManagerFor(Player).Unregister(EngineContainer);
+
+            HideFromTrack();
+        }
+
+        /// <summary>
+        /// Remove this player's needle, HUD card and percussion track from the vocal track. The engine keeps
+        /// running. Refer to <see cref="ShownOnTrack"/>.
+        /// </summary>
+        private void HideFromTrack()
+        {
+            ShownOnTrack = false;
+
+            _needleVisualContainer.SetActive(false);
+            _hittingParticleGroup.Stop();
+            _hud.gameObject.SetActive(false);
+            GameManager.VocalTrack.HidePercussionTrack(_percussionTrack);
         }
 
         protected override void FinishDestruction()
@@ -279,6 +357,8 @@ namespace YARG.Gameplay.Player
 
                 LastCombo = Combo;
 
+                if (!ShownOnTrack) return;
+
                 ShowTextNotifications(isLastPhrase);
 
                 // Order is important here. ShowVocalPhraseResult() will skip showing AWESOME! if other, more important notifications are already showing.
@@ -287,7 +367,7 @@ namespace YARG.Gameplay.Player
 
             engine.OnNoteHit += (_, note) =>
             {
-                if (note.IsPercussion && _percussionNoteLookup.TryGetValue(
+                if (ShownOnTrack && note.IsPercussion && _percussionNoteLookup.TryGetValue(
                         (note.Tick, note.TickEnd), out var visualNote))
                 {
                     _percussionTrack.HitPercussionNote(visualNote);
@@ -298,27 +378,27 @@ namespace YARG.Gameplay.Player
             {
                 if (note.IsVocalPhrase)
                 {
-                    if (LastCombo >= 2)
+                    if (LastCombo >= 2 && !IsRemote)
                     {
                         GlobalAudioHandler.PlaySoundEffect(SfxSample.NoteMiss);
                     }
 
                     LastCombo = Combo;
-                    _hud.SetFullCombo(false);
+                    if (ShownOnTrack) _hud.SetFullCombo(false);
                 }
             };
 
             engine.OnSing += (singing) =>
             {
                 _lastSingTime = singing
-                    ? GameManager.InputTime
+                    ? SingClock
                     : null;
             };
 
             engine.OnHit += (hitting) =>
             {
                 _lastHitTime = hitting
-                    ? GameManager.InputTime
+                    ? SingClock
                     : null;
             };
 
@@ -345,7 +425,7 @@ namespace YARG.Gameplay.Player
         protected override void ResetVisuals()
         {
             _lastTargetNote = null;
-            _hud.SetFullCombo(IsFc);
+            if (ShownOnTrack) _hud.SetFullCombo(IsFc);
         }
 
         public override void ResetPracticeSection()
@@ -423,11 +503,14 @@ namespace YARG.Gameplay.Player
                 return false;
             }
 
-            return currentTime - lastTime.Value <= 1f / EngineParams.ApproximateVocalFps + 0.05;
+            double slack = IsRemote ? REMOTE_SING_SLACK : 0;
+            return currentTime - lastTime.Value <= 1f / EngineParams.ApproximateVocalFps + 0.05 + slack;
         }
 
         protected override void UpdateVisuals(double visualTime)
         {
+            if (!ShownOnTrack) return;
+
             UpdatePercussionPhrase(visualTime);
             UpdateSingNeedle();
 
@@ -454,7 +537,7 @@ namespace YARG.Gameplay.Player
         protected override void OnStarPowerReady()
         {
             base.OnStarPowerReady();
-            _hud.ShowNotification(TextNotificationType.StarPowerReady);
+            if (ShownOnTrack) _hud.ShowNotification(TextNotificationType.StarPowerReady);
         }
 
         private void ShowTextNotifications(bool isLastPhrase)
@@ -547,12 +630,16 @@ namespace YARG.Gameplay.Player
             const float NEEDLE_ROT_LERP = 25f;
 
             // Get the appropriate sing time
-            var singTime = GameManager.InputTime;
+            var singTime = SingClock;
+
+            // A friend's needle shows where they sang a network delay ago, so it targets the notes of that time
+            double noteTime = GameManager.SongTime - EngineLag;
+            bool remoteStalled = IsRemote && EngineLag > REMOTE_NEEDLE_MAX_LAG;
 
             // Get whether or not the player has sang within the time threshold.
             // We gotta use a threshold here because microphone inputs are passed every X seconds,
             // not in a constant stream.
-            if (!IsInThreshold(singTime, _lastSingTime) || _shouldHideNeedle)
+            if (!IsInThreshold(singTime, _lastSingTime) || _shouldHideNeedle || remoteStalled)
             {
                 // Hide the needle if there's no singing
                 if (_needleVisualContainer.activeSelf)
@@ -575,7 +662,7 @@ namespace YARG.Gameplay.Player
                 }
 
                 var transformCache = transform;
-                float lastNotePitch = _lastTargetNote?.PitchAtSongTime(GameManager.SongTime) ?? -1f;
+                float lastNotePitch = _lastTargetNote?.PitchAtSongTime(noteTime) ?? -1f;
 
                 if (_lastTargetNote is not null && IsInThreshold(singTime, _lastHitTime))
                 {

@@ -1,6 +1,5 @@
 using YARG.Core.Logging;
 using YARG.Gameplay;
-using YARG.Gameplay.Player;
 using YARG.Integration.Link.Play;
 using YARG.Integration.Link.Session;
 using YARG.Menu.Persistent;
@@ -124,9 +123,9 @@ namespace YARG.Integration.Link
                 if (player.Player.RemoteFeed is not { } feed || feed.Member != id) continue;
 
                 name ??= feed.Name;
-                if (player is TrackPlayer { IsActive: true } track)
+                if (player.IsActive)
                 {
-                    track.DropOutRemote();
+                    player.DropOutRemote();
                     any = true;
                 }
             }

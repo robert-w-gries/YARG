@@ -176,9 +176,9 @@ namespace YARG.Integration.Link
 
         /// <summary>
         /// The fail meter's icons on a joiner: every player the host's meter counts, at the host's values. Our
-        /// own players and friends' mirrored players use their highway's icon; friends' players without a
-        /// highway (vocals, pro guitar) get their instrument's icon. Returns <c>null</c> when this game's own
-        /// meter is the band's.
+        /// own players and friends' mirrored players (highways and singers) use their engine's icon; friends'
+        /// players that aren't mirrored here (pro guitar, or a player this game couldn't add) get their
+        /// instrument's icon. Returns <c>null</c> when this game's own meter is the band's.
         /// </summary>
         public List<FailMeter.Marker> Markers(GameManager gm)
         {
@@ -204,12 +204,18 @@ namespace YARG.Integration.Link
                 });
             }
 
-            // Friends' players that have no highway here can still be on the host's meter
+            // Friends' players that aren't mirrored here can still be on the host's meter
+            var mirroredHere = new HashSet<RemoteInputFeed>();
+            foreach (var player in gm.Players)
+            {
+                if (player.Player.RemoteFeed is { } feed) mirroredHere.Add(feed);
+            }
+
             foreach (var setup in _song.Friends.Values)
             {
                 foreach (var feed in setup.Feeds)
                 {
-                    if (feed.Mirrored) continue;
+                    if (mirroredHere.Contains(feed)) continue;
 
                     string spriteName = null;
                     if (Enum.TryParse(feed.Instrument, out Instrument instrument))

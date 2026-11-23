@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Cysharp.Threading.Tasks;
+using YARG.Core;
+using YARG.Core.Chart;
 using YARG.Core.Engine;
 using YARG.Core.Engine.Drums;
 using YARG.Core.Engine.Guitar;
@@ -180,19 +182,25 @@ namespace YARG.Gameplay
         private UniTask WaitForOnlineStartTime() => Link?.WaitForStartTime() ?? UniTask.CompletedTask;
 
         /// <summary>
-        /// Add a highway for each player of a friend. Each highway plays the inputs that come from the game of
-        /// the friend, as a replay does.
+        /// Add a highway for each player of a friend, and a singer on the vocal track for each vocalist of a
+        /// friend. Each one plays the inputs that come from the game of the friend, as a replay does.
         /// </summary>
         /// <remarks>
-        /// <see cref="LinkController.TakeRemotePlayers"/> gives only the players that can have a highway
-        /// (<see cref="RemoteInputFeed.Mirrored"/>). Vocals and pro guitar players of friends get no highway.
-        /// They have an icon on the fail meter of the band.
+        /// <see cref="LinkController.TakeRemotePlayers"/> gives only the players that can be mirrored
+        /// (<see cref="RemoteInputFeed.Mirrored"/>). Pro guitar players of friends get no highway. They have an
+        /// icon on the fail meter of the band.
         /// </remarks>
         private void CreateRemotePlayers(List<(ReplayFrame Frame, ReplayData Data, RemoteInputFeed Feed)> remotePlayers)
         {
             foreach (var (frame, data, feed) in remotePlayers)
             {
                 var player = new YargPlayer(frame, data, feed);
+                if (player.Profile.GameMode == GameMode.Vocals)
+                {
+                    CreateRemoteVocalsPlayer(player, feed);
+                    continue;
+                }
+
                 var prefab = GetTrackPrefab(player.Profile);
                 if (prefab == null)
                 {
@@ -222,6 +230,72 @@ namespace YARG.Gameplay
                     YargLogger.LogException(ex, $"Link: failed to add {feed.Name}'s track");
                 }
             }
+        }
+
+        /// <summary>
+        /// Add a singer of a friend to the vocal track. When no player of this game sings, the friend's singer
+        /// shows the vocal track. All singers on the vocal track use one vocals mode (solo or harmony), as in local
+        /// multiplayer. A friend who sings in another mode than the track gets no needle, but the engine of the
+        /// singer still runs. Thus the score and the fail meter of the band count the singer.
+        /// </summary>
+        private void CreateRemoteVocalsPlayer(YargPlayer player, RemoteInputFeed feed)
+        {
+            var instrument = player.Profile.CurrentInstrument;
+            if (instrument is not (Instrument.Vocals or Instrument.Harmony or Instrument.PartyVocals))
+            {
+                YargLogger.LogFormatWarning("Link: no vocals for {0}'s {1}", feed.Name, instrument);
+                return;
+            }
+
+            if (VocalTrack.OriginalVocalsTrack == null)
+            {
+                // The vocal track takes a highway slot. See CreateRemotePlayers for the limit.
+                if (_highwayIndex + 1 >= HighwayCameraRendering.MAX_MATRICES)
+                {
+                    YargLogger.LogFormatWarning("Link: no vocal track for {0}'s {1}: all {2} highways are in use",
+                        feed.Name, instrument, HighwayCameraRendering.MAX_MATRICES);
+                    return;
+                }
+
+                _highwayIndex++;
+                InitializeVocalTrack(player);
+            }
+
+            bool shown = ReferenceEquals(Chart.GetVocalsTrack(instrument), VocalTrack.OriginalVocalsTrack);
+            if (!shown)
+            {
+                YargLogger.LogFormatInfo("Link: {0} sings {1}, but the vocal track shows {2}, so they get no needle",
+                    feed.Name, instrument, VocalTrack.OriginalVocalsTrack.Instrument);
+            }
+
+            try
+            {
+                CreateVocalsPlayer(_players.Count, player, lastHighScore: null, CleanVocalsTrack(instrument), shown);
+                YargLogger.LogFormatInfo("Link: added {0}'s {1} singer", player.Profile.Name, instrument);
+            }
+            catch (Exception ex)
+            {
+                YargLogger.LogException(ex, $"Link: failed to add {feed.Name}'s singer");
+            }
+        }
+
+        /// <summary>
+        /// A new copy of the vocals track that <see cref="SongChart.GetVocalsTrack"/> gives for
+        /// <paramref name="instrument"/>, without the modifiers of the players of this game.
+        /// </summary>
+        private VocalsTrack CleanVocalsTrack(Instrument instrument)
+        {
+            var solo = _cleanSoloVocals ?? Chart.Vocals;
+            var harmony = _cleanHarmonyVocals ?? Chart.Harmony;
+            var track = instrument switch
+            {
+                Instrument.Vocals      => solo,
+                Instrument.Harmony     => harmony,
+                // The same choice as SongChart.GetVocalsTrack
+                Instrument.PartyVocals => harmony.Parts[0].NotePhrases.Count > 0 ? harmony : solo,
+                _ => throw new ArgumentException($"Instrument {instrument} is not a vocals instrument!")
+            };
+            return track.Clone();
         }
 
         /// <summary>
@@ -325,7 +399,7 @@ namespace YARG.Gameplay
         /// <summary>
         /// Calculate the star cutoffs of the band from all players: the players of this game, and all friends'
         /// players. A friend's player with a highway uses the cutoffs of its mirror engine (they follow a
-        /// difficulty change). A friend's player without a highway (vocals, pro guitar) uses the cutoffs from
+        /// difficulty change). A friend's player that isn't mirrored here (pro guitar) uses the cutoffs from
         /// the friend's setup.
         /// </summary>
         private void UpdateOnlineBandCutoffs()

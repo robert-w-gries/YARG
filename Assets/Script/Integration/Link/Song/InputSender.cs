@@ -57,12 +57,12 @@ namespace YARG.Integration.Link
         }
 
         /// <summary>
-        /// Game modes whose players can be shown as a highway on friends' screens.
+        /// Game modes whose players friends' games can mirror: a highway, or a singer on the vocal track.
         /// </summary>
         public static bool CanMirror(GameMode mode)
         {
-            // Vocals share one track and pro guitar has no replay support
-            return mode is not (GameMode.Vocals or GameMode.ProGuitar);
+            // Pro guitar has no replay support in YARG.Core
+            return mode is not GameMode.ProGuitar;
         }
 
         private static int[] StarCutoffs(BasePlayer player)
