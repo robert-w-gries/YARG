@@ -751,7 +751,7 @@ Current state (2026-11-15): implemented as above. The host's `EngineManager` eve
 ten times a second as an unreliable `meter` message. It also carries each counted player's value, grouped by
 member (`players: { member: [happiness or null, ...] }` by setup index). A client's fail meter shows an
 icon for every player in that list, at the host's values: its own players, friends' mirrored players, and
-friends' players with no highway there (vocals, pro guitar), which get their instrument's icon. Until the
+friends' players that aren't mirrored there (pro guitar), which get their instrument's icon. Until the
 first `meter` message, a client shows its own players at its own values. On a client, a failed player's highway goes down
 (`TrackPlayer.FailFromLink`), and every engine waits for a revive (`EngineContainer.PlayerHasFailed`), so
 the next star power activation saves the band, as in local multiplayer. Only the host's meter can fail
@@ -785,16 +785,11 @@ the song, and the host's no fail setting is the one that counts.
   their owner, so star power used right around a fail or revive can count as a revive on one game and as
   plain star power on another. Fails, saves and scores stay with the host and each player's own game;
   only a mirrored highway's star power display can be briefly wrong.
-- **Vocals and pro guitar players aren't mirrored.** Their `setup` entry has no replay frame (`frame: -1`,
-  from `InputSender.CanMirror`), so friends' games make no highway or engine for them. They still show in
-  the lobby and play normally on their own game. The reasons differ:
-  - *Pro guitar* has no replay support in YARG.Core: `ReplayFrame` can't serialize its engine parameters
-    and stats ("Stat creation not implemented"). Fixing it is a Core change (see
-    [YARG.Core follow-up work](#yargcore-follow-up-work), item 3).
-  - *Vocals* can be serialized; the limit is in YARG. Every vocalist shares one `VocalTrack`, which
-    `GameManager.Loading` sets up from the local vocalists (harmony parts included). `CreateRemotePlayers`
-    only adds separate `TrackPlayer` highways afterwards, and skips vocals. Mirroring them means adding
-    remote singers to the shared track and assigning harmony parts across games. No Core change is needed.
+- **Pro guitar players aren't mirrored.** Their `setup` entry has no replay frame (`frame: -1`, from
+  `InputSender.CanMirror`), so friends' games make no highway or engine for them. They still show in the
+  lobby and play normally on their own game. Pro guitar has no replay support in YARG.Core: `ReplayFrame`
+  can't serialize its engine parameters and stats ("Stat creation not implemented"). Fixing it is a Core
+  change (see [YARG.Core follow-up work](#yargcore-follow-up-work), item 3).
 
   What happens to the band meter depends on whose game the player is on:
   - **On a client**, the host has no engine for them, so they aren't in the band's meter. They can't fail
@@ -802,6 +797,15 @@ the song, and the host's no fail setting is the one that counts.
     it's effectively no fail.
   - **On the host**, they're local to the host's main `EngineManager`, so they do count: they can fail
     the band and save it, although no friend can see their track.
+- **Friends' singers share the vocal track, in its vocals mode.** A friend's vocalist is mirrored like any
+  other player (`GameManager.CreateRemoteVocalsPlayer`): their mic inputs drive a `VocalsEngine` here, with
+  a needle and HUD card on the vocal track. When nobody on this game sings, the first friend's singer sets
+  up the track. All singers on one track use one vocals mode, as local multiplayer requires, but friends
+  pick theirs on their own game. A friend whose mode (solo or harmony) differs from the track's gets no
+  needle (`VocalsPlayer.ShownOnTrack`); their engine still runs, so the score, stars and band meter count
+  them. The track's lines also follow the modifiers of the singer who set it up, so a friend with
+  different vocal modifiers sees their own notes scored but not drawn. A friend's needle shows their
+  pitch a network delay late, like the hits on a friend's highway.
 - **If the host drops mid-song, the song ends for the clients.** There's no host migration yet, and the
   host runs the band meter and synced pause. A client whose host left the song or stopped sending gets a
   countdown and returns to the library (see the phase 5 notes). A host that leaves can take the party
@@ -862,8 +866,9 @@ maintainers' go-ahead. Each one names the workaround in YARG that it would repla
 4. Which minimum macOS version does YARG target?
 5. Which of the changes under [YARG.Core follow-up work](#yargcore-follow-up-work) would maintainers
    accept? Item 1 removes the star power score drift described under known limitations.
-6. Should the host's vocalists and pro guitarists count toward the band meter while friends can't see
-   them? Today a client's can't fail the band and the host's can.
+6. Should the host's pro guitarists count toward the band meter while friends can't see them? Today a
+   client's can't fail the band and the host's can. Should the lobby make every singer use the same vocals
+   mode, so that friends' singers always get a needle?
 7. For official song sharing, where does the trusted list of official song hashes come from (for example, a
    manifest published with the official setlists), and do maintainers want peer-to-peer sharing of official
    songs at all, or should a missing song send the player to the launcher instead?

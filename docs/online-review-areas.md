@@ -102,13 +102,13 @@ Examine these items:
 
 - **Structure:** `LinkController` opens the session, sends each event and each message to the class that handles it, and is the only entry point for the game. Each responsibility is a separate class: `SongRequests`, `SyncedStart`, `HostLoss` and `LinkDebugOverlays` for the session, and `SyncedSong` for one song. `SyncedSong` owns the state of the song: our players (`InputSender`), the friends' players (`RemoteSetup`), and the features `BandMeterSync`, `PauseSync`, `ClockSync` and `Departures`. When the song ends, the object goes away with all its state. The decisions that do not need Unity are in `Play/` (`ClockCorrector`, `DepartureTracker`, `HostLossTracker`, `ResumeTiming`, `HostMeterReadings`), with tests in `Tests/YARG.Link.Tests`.
 - **Messages:** The game data about songs are typed classes in `Play/PlayMessages.cs` (`PlayProtocol`). Each class checks the values from a friend in `Check`, before a handler gets the message. The wire format did not change in the restructure.
-- **Modes:** `CanMirror` does not send vocals or pro guitar. The plan gives the causes.
+- **Modes:** `CanMirror` does not send pro guitar. The plan gives the cause.
 - **Leave and host loss:** `Song/HostLoss.cs` and `Song/Departures.cs`. When the host selects Back to Library, the host can leave with the party (`endsong`) or leave alone. The host removes a friend that left the song or that sent no inputs for 5 s (`dropped`). A joiner without a host shows a countdown and goes back to the library. There is no host migration.
 - **Debug overlays:** Two IMGUI boxes (`LinkDebugOverlays`) are debugging aids, off by default. The component is enabled only while one of them is on, so the game makes no IMGUI calls without them: Settings › Debug › Online link score box values (the values of this game against the values in the score box, for each player) and Online link connections (the health of each connection). The band's score and stars are in the normal score box. The old scoreboard overlay was removed, because these two boxes show all of its data.
 
 ### 7. Friends' tracks
 
-Each player of a friend becomes a local `TrackPlayer`. It plays the received inputs, like a replay.
+Each player of a friend becomes a local `TrackPlayer`, or a `VocalsPlayer` on the shared vocal track. It plays the received inputs, like a replay.
 
 Examine these items:
 
@@ -116,7 +116,8 @@ Examine these items:
 - **Visual time:** A friend's highway is drawn at `GameManager.VisualTime`, as every other highway is. Only the engine of a friend's player runs late (`EngineLag`).
 - **Late hits:** `LateHitAllowance` keeps passed notes on a friend's track for a maximum of 1 s.
 - **`IsRemote` checks:** A friend's track does not play sounds, mute stems, show the input viewer or rewind.
-- **Order:** The game adds friends' tracks after the local tracks. It does not add vocals.
+- **Order:** The game adds friends' tracks after the local tracks. A friend's singer joins the vocal track, or sets it up when no local player sings (`CreateRemoteVocalsPlayer`).
+- **Vocals:** A friend's needle uses the time of their engine (`VocalsPlayer.SingClock`), with extra slack (`REMOTE_SING_SLACK`), and hides when their inputs stall. A friend whose vocals mode differs from the track's gets no needle, HUD card or percussion track (`ShownOnTrack`), but their engine runs. Friends' singers take their notes from clean copies of the vocals tracks, because a local singer's modifiers change the chart's track.
 
 ### 8. Scores and band fail meter
 
@@ -240,7 +241,8 @@ These items are open. Some are decisions about gameplay that the maintainers mus
    Possible changes: mark online scores in the score database, keep them out of the usual high scores, or do not save a score after a jump.
 6. **The song speed of a joiner changes while it follows the host.** During a correction, the song plays at 98% or 102% speed (`ClockCorrector.SLEW_RATE`), and the audio sync follows. Nobody has listened for a change of pitch or tempo, with and without time stretch. This is most important on connections with a high latency, where corrections occur frequently.
 7. **Smaller items:**
-   - Friends' vocals and pro guitar players have no highway (`InputSender.CanMirror`). They have only an icon on the fail meter.
+   - Friends' pro guitar players have no highway (`InputSender.CanMirror`). They have only an icon on the fail meter.
+   - A friend who sings in another vocals mode than the vocal track (solo against harmony) has no needle. The score and the band meter still count them.
    - The hits of friends show a network delay late. Passed notes stay on a friend's track for a maximum of 1 s (`BasePlayer.LateHitAllowance`).
    - Inputs go on the reliable stream, at a maximum of 120 messages each second. Thus a lost packet stops a friend's track for a short time. It does not cause a gap.
    - After the 120 s wait for a synced start, the toast says "Lost the online session", also when the session is connected and a friend was only slow.
