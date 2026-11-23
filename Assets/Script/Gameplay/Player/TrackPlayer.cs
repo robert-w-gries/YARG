@@ -150,7 +150,7 @@ namespace YARG.Gameplay.Player
         /// Online: a friend whose player this mirrors has left the song or lost their connection. Their inputs
         /// stopped, so their engine would freeze; drop them out instead, whoever is left.
         /// </summary>
-        public void DropOutRemote()
+        public override void DropOutRemote()
         {
             if (!IsRemote || !IsActive)
             {

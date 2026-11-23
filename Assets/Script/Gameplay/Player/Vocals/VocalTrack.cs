@@ -610,17 +610,40 @@ namespace YARG.Gameplay.Player
         public VocalPercussionTrack CreatePercussionTrack()
         {
             var percussionTrack = Instantiate(_percussionTrackPrefab, _percussionTrackContainer);
+            LayOutPercussionTracks();
+            return percussionTrack;
+        }
+
+        /// <summary>
+        /// Hide the percussion track of a player who is not shown on this track (online play: a friend whose
+        /// vocals mode differs from this track, or who dropped out). The other percussion tracks close the gap.
+        /// </summary>
+        public void HidePercussionTrack(VocalPercussionTrack percussionTrack)
+        {
+            percussionTrack.gameObject.SetActive(false);
+            LayOutPercussionTracks();
+        }
+
+        private void LayOutPercussionTracks()
+        {
+            int count = 0;
+            for (int i = 0; i < _percussionTrackContainer.childCount; i++)
+            {
+                if (_percussionTrackContainer.GetChild(i).gameObject.activeSelf) count++;
+            }
 
             // Space out the percussion tracks evenly
             const float FULL_HEIGHT = TRACK_TOP_ONE_LANE - TRACK_BOTTOM;
-            var offset = FULL_HEIGHT / (_percussionTrackContainer.childCount + 1);
+            var offset = FULL_HEIGHT / (count + 1);
+            int slot = 0;
             for (int i = 0; i < _percussionTrackContainer.childCount; i++)
             {
                 var child = _percussionTrackContainer.GetChild(i);
-                child.localPosition = child.localPosition.WithZ(TRACK_TOP_ONE_LANE - offset * (i + 1));
-            }
+                if (!child.gameObject.activeSelf) continue;
 
-            return percussionTrack;
+                slot++;
+                child.localPosition = child.localPosition.WithZ(TRACK_TOP_ONE_LANE - offset * slot);
+            }
         }
 
         public void UpdateCountdown(double countdownLength, double endTime)
@@ -705,7 +728,7 @@ namespace YARG.Gameplay.Player
         {
             for (int i = 0; i < _vocalPlayers.Count; i++)
             {
-                if (_vocalPlayers[i].Engine.EngineStats.IsStarPowerActive)
+                if (_vocalPlayers[i].ShownOnTrack && _vocalPlayers[i].Engine.EngineStats.IsStarPowerActive)
                 {
                     return true;
                 }

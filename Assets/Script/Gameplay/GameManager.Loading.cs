@@ -12,6 +12,7 @@ using YARG.Core.Logging;
 using YARG.Core.Replays;
 using YARG.Gameplay.HUD;
 using YARG.Gameplay.Player;
+using YARG.Integration.Link;
 using YARG.Menu;
 using YARG.Menu.Persistent;
 using YARG.Menu.Settings;
@@ -60,6 +61,13 @@ namespace YARG.Gameplay
         /// <see cref="TrackView"/>. Thus the number of track views is not the number of slots.
         /// </summary>
         private int _highwayIndex = -1;
+
+        /// <summary>The needle number of the last singer that <see cref="CreateVocalsPlayer"/> created.</summary>
+        private int _vocalIndex = -1;
+
+        // Online play: clean copies of the chart's vocals tracks for friends' singers (CreatePlayers)
+        private VocalsTrack _cleanSoloVocals;
+        private VocalsTrack _cleanHarmonyVocals;
         private string _loadFailureMessage;
         // All access to chart data must be done through this event,
         // since things are loaded asynchronously
@@ -484,11 +492,18 @@ namespace YARG.Gameplay
             {
                 _players = new List<BasePlayer>();
 
-                bool vocalTrackInitialized = false;
-
                 int index = -1;
                 _highwayIndex = -1;
-                int vocalIndex = -1;
+                _vocalIndex = -1;
+
+                // Online play: keep clean copies of the vocals tracks for friends' singers. A local singer applies
+                // their modifiers to the chart's track itself.
+                if (LinkController.Instance is { ShouldHoldForStart: true } && !IsPractice && ReplayInfo == null)
+                {
+                    _cleanSoloVocals = Chart.Vocals.Clone();
+                    _cleanHarmonyVocals = Chart.Harmony.Clone();
+                }
+
                 foreach (var player in YargPlayers)
                 {
                     player.IsScoreValid = true;
@@ -535,43 +550,13 @@ namespace YARG.Gameplay
                     else
                     {
                         // Initialize the vocal track if it hasn't been already, and hide lyric bar
-                        if (!vocalTrackInitialized)
+                        if (VocalTrack.OriginalVocalsTrack == null)
                         {
                             _highwayIndex++;
-                            VocalTrack.gameObject.SetActive(true);
-                            // Position the vocal track at its highway slot so the shader's WorldPosToIndex maps it correctly
-                            VocalTrack.transform.position = new Vector3(_highwayIndex * TRACK_SPACING_X, 100, 0);
-                            _trackViewManager.CreateVocalTrackView(_highwayIndex);
-
-                            // Use GetVocalsTrack so PartyVocals gets the correct track
-                            // (harmony when available, solo vocals fallback for songs
-                            // with no harmony parts).
-                            var chart = Chart.GetVocalsTrack(player.Profile.CurrentInstrument);
-                            VocalTrack.Initialize(chart, player, Song.VocalScrollSpeedScalingFactor);
-
-                            if (SettingsManager.Settings.KeepLyricBar.Value &&
-                                SettingsManager.Settings.LyricDisplay.Value != LyricDisplayMode.Disabled)
-                            {
-                                _lyricBar.SetVocalPlayerLayout();
-                            }
-                            else
-                            {
-                                _lyricBar.gameObject.SetActive(false);
-                            }
-                            vocalTrackInitialized = true;
+                            InitializeVocalTrack(player);
                         }
 
-                        // Create the player on the vocal track
-
-                        var vocalsPlayer = VocalTrack.CreatePlayer();
-                        vocalIndex++;
-                        var playerHud = _trackViewManager.CreateVocalsPlayerHUD();
-
-                        var percussionTrack = VocalTrack.CreatePercussionTrack();
-                        percussionTrack.TrackSpeed = VocalTrack.TrackSpeed;
-                        vocalsPlayer.Initialize(index, vocalIndex, player, Chart, playerHud, percussionTrack, lastHighScore, VocalTrack.TrackSpeed);
-
-                        _players.Add(vocalsPlayer);
+                        CreateVocalsPlayer(index, player, lastHighScore);
                     }
 
 
@@ -606,6 +591,56 @@ namespace YARG.Gameplay
                 _loadFailureMessage = "Failed to load song!";
                 YargLogger.LogException(ex, "Failed to load song!");
             }
+        }
+
+        /// <summary>
+        /// Show the vocal track in the slot <see cref="_highwayIndex"/>, with the vocals mode (solo or harmony)
+        /// of <paramref name="player"/>. All vocalists on the track use that mode.
+        /// </summary>
+        private void InitializeVocalTrack(YargPlayer player)
+        {
+            VocalTrack.gameObject.SetActive(true);
+            // Position the vocal track at its highway slot so the shader's WorldPosToIndex maps it correctly
+            VocalTrack.transform.position = new Vector3(_highwayIndex * TRACK_SPACING_X, 100, 0);
+            _trackViewManager.CreateVocalTrackView(_highwayIndex);
+
+            // Use GetVocalsTrack so PartyVocals gets the correct track
+            // (harmony when available, solo vocals fallback for songs
+            // with no harmony parts).
+            var chart = Chart.GetVocalsTrack(player.Profile.CurrentInstrument);
+            VocalTrack.Initialize(chart, player, Song.VocalScrollSpeedScalingFactor);
+
+            if (SettingsManager.Settings.KeepLyricBar.Value &&
+                SettingsManager.Settings.LyricDisplay.Value != LyricDisplayMode.Disabled)
+            {
+                _lyricBar.SetVocalPlayerLayout();
+            }
+            else
+            {
+                _lyricBar.gameObject.SetActive(false);
+            }
+        }
+
+        /// <summary>
+        /// Create a singer on the vocal track. Use this method for the players of this game. In online play, also
+        /// use it for the players of friends.
+        /// </summary>
+        /// <param name="sourceTrack">Refer to <see cref="VocalsPlayer.Initialize"/>.</param>
+        /// <param name="shownOnTrack">Refer to <see cref="VocalsPlayer.ShownOnTrack"/>.</param>
+        private VocalsPlayer CreateVocalsPlayer(int index, YargPlayer player, int? lastHighScore,
+            VocalsTrack sourceTrack = null, bool shownOnTrack = true)
+        {
+            var vocalsPlayer = VocalTrack.CreatePlayer();
+            _vocalIndex++;
+            var playerHud = _trackViewManager.CreateVocalsPlayerHUD();
+
+            var percussionTrack = VocalTrack.CreatePercussionTrack();
+            percussionTrack.TrackSpeed = VocalTrack.TrackSpeed;
+            vocalsPlayer.Initialize(index, _vocalIndex, player, Chart, playerHud, percussionTrack, lastHighScore,
+                VocalTrack.TrackSpeed, sourceTrack, shownOnTrack);
+
+            _players.Add(vocalsPlayer);
+            return vocalsPlayer;
         }
 
         private GameObject GetTrackPrefab(YargProfile profile)
