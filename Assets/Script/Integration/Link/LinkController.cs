@@ -81,6 +81,12 @@ namespace YARG.Integration.Link
         /// <summary>How often our status and players are checked for changes, for friends' lobbies, in seconds.</summary>
         private const double STATE_INTERVAL = 0.25;
 
+        /// <summary>
+        /// Ask the host to restart again after this long without an answer, in seconds. Until then, asking again
+        /// does nothing.
+        /// </summary>
+        private const double RESTART_ANSWER_TIMEOUT = 5.0;
+
         public static LinkController Instance { get; private set; }
 
         private static readonly Stopwatch Clock = Stopwatch.StartNew();
@@ -110,6 +116,15 @@ namespace YARG.Integration.Link
 
         // The synced song we're in, if any
         private SyncedSong _song;
+
+        // We asked the host to restart our song, at this time (Now), and haven't heard back
+        private double? _restartAskedAt;
+
+        // The open restart vote of our song, if any
+        private SyncStartCoordinator.RestartVote _restartVote;
+
+        // Our song was paused while that vote was open: carrying on from that pause ends the vote
+        private bool _restartVotePaused;
 
         /// <summary>Whether Settings › Experimental › "Enable online link" is on.</summary>
         public static bool IsEnabled => SettingsManager.Settings?.LinkEnable.Value ?? false;
@@ -220,6 +235,7 @@ namespace YARG.Integration.Link
             }
 
             _song?.Update(Now);
+            UpdateRestartVote();
             _hostLoss.Update(_session, _song, Now);
         }
 
@@ -378,6 +394,8 @@ namespace YARG.Integration.Link
             _session.LoadSongRequested += OnLoadSongRequested;
             _session.StartScheduled += OnStartScheduled;
             _session.StartCancelled += OnStartCancelled;
+            _session.RestartRequested += OnRestartRequested;
+            _session.RestartVoteChanged += OnRestartVoteChanged;
             _session.GameDataReceived += OnGameData;
             _session.Disconnected += OnDisconnected;
             _session.PeerRefused += OnPeerRefused;
@@ -428,6 +446,8 @@ namespace YARG.Integration.Link
             _joinTicket = null;
             _nextJoinTime = double.PositiveInfinity;
             LastProblem = null;
+            _restartAskedAt = null;
+            _restartVote = null;
             _requests.Clear();
             _pendingSetups.Clear();
             _connections.Clear();
@@ -719,12 +739,139 @@ namespace YARG.Integration.Link
         {
             if (_start.OnCancelled(reason)) return;
 
+            if (_restartAskedAt.HasValue)
+            {
+                _restartAskedAt = null;
+                ToastManager.ToastWarning($"Couldn't restart the song: {reason}");
+                return;
+            }
+
             if (_requests.IsChoosing)
             {
                 _requests.Clear();
                 ToastManager.ToastWarning($"Online start cancelled: {reason}");
             }
         }
+
+        /// <summary>
+        /// Called by the pause menu's and the fail menu's "Restart": play the song again from the start, with
+        /// everyone in this play of it. The host's restart happens straight away. A joiner's is a vote that
+        /// passes once everyone in the song picks Restart (<see cref="OnRestartVoteChanged"/>); a joiner can't
+        /// open votes back to back. Then the host tells every game in that play to load the song again
+        /// (<see cref="OnRestartRequested"/>), and the games start it together as they do any song.
+        /// </summary>
+        /// <returns>
+        /// Whether the restart is on its way. If not (the session is gone, or the song isn't synced any more),
+        /// the game restarts on its own.
+        /// </returns>
+        public bool RequestRestart(GameManager gm)
+        {
+            if (_session is not { IsConnected: true } || _song == null || !_song.IsFor(gm)) return false;
+
+            // Already asked: the answer is on its way, or we're waiting for the others to agree
+            if (_restartAskedAt is { } asked && Now - asked < RESTART_ANSWER_TIMEOUT) return true;
+            if (_restartVote != null && _restartVote.Yes.Contains(_session.LocalMemberId)) return true;
+
+            YargLogger.LogInfo("Link: asking to restart the song with the band");
+            _restartAskedAt = Now;
+            _session.RequestRestart(ToSongInfo(gm.Song), _song.PlayId);
+            return true;
+        }
+
+        /// <summary>
+        /// The host says a member asked to restart <paramref name="song"/>. If we're in their play of it, leave
+        /// this play and load the song again; loading reports ready for the start (<see cref="WaitForStartSignal"/>).
+        /// Else, tell the host we're not taking part.
+        /// </summary>
+        private void OnRestartRequested(SongInfo song, string member, string play)
+        {
+            bool fromUs = member == _session.LocalMemberId;
+            if (fromUs) _restartAskedAt = null;
+
+            var gm = _song?.GameManager;
+            bool inPlay = _song != null && _song.IsFor(gm) && _song.SongHash == song.Hash && (fromUs
+                ? play == _song.PlayId
+                : _song.Friends.TryGetValue(member, out var setup) && setup.Play == play);
+            if (!inPlay)
+            {
+                YargLogger.LogInfo($"Link: not in the play of {song} that's restarting");
+                _session.ReportDecline(song.Hash, DeclinedMessage.BUSY);
+                return;
+            }
+
+            if (!fromUs)
+            {
+                string name = FindMember(member)?.Name ?? "A friend";
+                ToastManager.ToastInformation($"{name} restarted the song");
+            }
+
+            // Leave this play now, not as the scene unloads: until then, friends who reload first look like
+            // they left it, and its pause, drop-out and host checks would act on that
+            YargLogger.LogInfo($"Link: restarting {song} with the band");
+            _restartVote = null;
+            _song.Send(new LeftMessage());
+            EndSong();
+            GlobalVariables.Instance.LoadScene(SceneIndex.Gameplay);
+        }
+
+        /// <summary>The restart vote of a song changed or ended.</summary>
+        private void OnRestartVoteChanged(SyncStartCoordinator.RestartVote vote)
+        {
+            if (_song == null || vote.Song.Hash != _song.SongHash) return;
+
+            bool ours = vote.Yes.Contains(_session.LocalMemberId);
+            if (ours) _restartAskedAt = null;
+
+            if (vote.Ended)
+            {
+                _restartVote = null;
+                if (vote.Reason != null)
+                {
+                    YargLogger.LogInfo($"Link: no restart: {vote.Reason}");
+                    ToastManager.ToastInformation($"No restart: {vote.Reason}");
+                }
+                return;
+            }
+
+            if (_restartVote == null && !ours && vote.Yes.Count > 0)
+            {
+                ToastManager.ToastInformation($"{NameOf(vote.Yes[0])} wants to restart the song. " +
+                    "Pick Restart in the pause menu to agree.");
+            }
+            if (_restartVote == null) _restartVotePaused = false;
+            _restartVote = vote;
+        }
+
+        /// <summary>
+        /// Call every frame. A song that carries on from a pause while its band votes on a restart (the band
+        /// resumed) ends the vote, so the vote can't restart the song from the middle of it. A song that was still
+        /// playing when the vote opened (the synced pause hadn't reached us yet) doesn't.
+        /// </summary>
+        private void UpdateRestartVote()
+        {
+            if (_restartVote == null) return;
+
+            var gm = _song?.GameManager;
+            if (_song == null || !_song.IsFor(gm))
+            {
+                _restartVote = null;
+                return;
+            }
+
+            if (gm.Paused)
+            {
+                _restartVotePaused = true;
+            }
+            else if (_restartVotePaused && gm.IsSongStarted)
+            {
+                YargLogger.LogInfo("Link: the song carried on, so the restart vote is over");
+                _session.WithdrawRestart(_song.SongHash);
+                _restartVote = null;
+            }
+        }
+
+        private string NameOf(string memberId) =>
+            memberId == _session?.LocalMemberId ? "You" : FindMember(memberId)?.Name ?? "A friend";
 
         private static SongInfo ToSongInfo(SongEntry song) =>
             new(song.Hash.ToString(), song.Name.Original, song.Artist.Original);
@@ -878,7 +1025,8 @@ namespace YARG.Integration.Link
         /// <summary>
         /// Called by <see cref="GameManager"/> as it's destroyed, which is how every song ends: finished, quit,
         /// restarted, or switched to practice. Restarting reloads gameplay without leaving it, so the scene alone
-        /// can't tell friends we've left this play of the song.
+        /// can't tell friends we've left this play of the song. A restart with the band
+        /// (<see cref="OnRestartRequested"/>) has already left it, so this does nothing then.
         /// </summary>
         public void OnSongExited(GameManager gm)
         {
@@ -959,7 +1107,38 @@ namespace YARG.Integration.Link
 
             var gm = _song?.GameManager;
             bool inSong = _session != null && gm != null && gm.IsSongStarted;
-            _banner.Show(inSong ? PauseStatusText() : null, LinkBanner.Style.Info);
+            string text = null;
+            if (inSong)
+            {
+                string pause = PauseStatusText();
+                string vote = RestartVoteText();
+                text = pause != null && vote != null ? $"{pause}\n\n{vote}" : pause ?? vote;
+            }
+            _banner.Show(text, LinkBanner.Style.Info);
+        }
+
+        /// <summary>Where the restart vote of our song is, for the banner.</summary>
+        /// <returns><c>null</c> without an open vote.</returns>
+        private string RestartVoteText()
+        {
+            var vote = _restartVote;
+            if (vote == null || vote.Yes.Count == 0) return null;
+
+            string first = vote.Yes[0] == _session.LocalMemberId ? "You asked" : $"{Escape(NameOf(vote.Yes[0]))} wants";
+            int total = vote.Yes.Count + vote.Waiting.Count;
+            var text = new System.Text.StringBuilder($"<b>{first} to restart the song ({vote.Yes.Count} of {total} agree)</b>\n");
+
+            if (vote.Yes.Contains(_session.LocalMemberId))
+            {
+                var waiting = new List<string>();
+                foreach (string id in vote.Waiting) waiting.Add(Escape(NameOf(id)));
+                text.Append($"Waiting for {string.Join(", ", waiting)} to pick Restart.");
+            }
+            else
+            {
+                text.Append("Pick Restart to agree. Resuming the song cancels the restart.");
+            }
+            return text.ToString();
         }
 
         /// <summary>What a synced pause is waiting on, for the banner over the pause menu.</summary>

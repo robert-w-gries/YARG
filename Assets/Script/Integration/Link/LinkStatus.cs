@@ -18,7 +18,7 @@ namespace YARG.Integration.Link
         public const string RESULTS  = "results";
 
         /// <summary>The scene a member in a song reports (see <see cref="SceneName"/>).</summary>
-        public const string SCENE_GAMEPLAY = "gameplay";
+        public const string SCENE_GAMEPLAY = LinkSession.SCENE_GAMEPLAY;
 
         /// <summary>A round trip above this, in milliseconds, is too slow to play on comfortably.</summary>
         public const double POOR_RTT_MS = 150;

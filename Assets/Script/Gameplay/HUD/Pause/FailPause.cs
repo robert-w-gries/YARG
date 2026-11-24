@@ -25,7 +25,7 @@ namespace YARG.Gameplay.HUD
         {
             base.BuildOnlineOptions();
 
-            // Only "Back to Library" stays. Thus the separators are not necessary.
+            // Only "Restart" and "Back to Library" stay. Thus the separators are not necessary.
             _separatorObject.SetActive(false);
             foreach (Transform child in _separatorObject.transform.parent)
             {

@@ -20,12 +20,12 @@ namespace YARG.Gameplay.HUD
         }
 
         /// <summary>
-        /// Options that would leave friends behind in online play: starting the song again (alone, since
-        /// friends are mid-song), practice, skipping to the next song, and no fail (the band's meter is shared).
+        /// Options that would leave friends behind in online play: practice, skipping to the next song, and no
+        /// fail (the band's meter is shared). Restart stays: it restarts the song for the whole band.
         /// </summary>
         private static readonly string[] OnlineHiddenOptions =
         {
-            nameof(Restart), nameof(TogglePractice), nameof(FailPause.EnableNoFail),
+            nameof(TogglePractice), nameof(FailPause.EnableNoFail),
             nameof(QuickSettings.ToggleNoFail), nameof(SetlistPause.Skip),
         };
 
@@ -89,6 +89,13 @@ namespace YARG.Gameplay.HUD
 
         public virtual void Restart()
         {
+            // Online play: the whole band restarts (after a vote, for a joiner). The menu stays open until the
+            // song loads again.
+            if (IsOnlinePlay && GameManager.RequestOnlineRestart())
+            {
+                return;
+            }
+
             PauseMenuManager.Restart();
         }
 

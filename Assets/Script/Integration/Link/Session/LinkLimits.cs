@@ -71,6 +71,25 @@ namespace YARG.Integration.Link.Session
             return clamped;
         }
 
+        /// <summary>Whether <paramref name="id"/> can be a member ID, play ID or song hash.</summary>
+        public static bool IsId(string id) => !string.IsNullOrEmpty(id) && id.Length <= MAX_ID_LENGTH;
+
+        /// <summary>
+        /// The member IDs in <paramref name="ids"/> that can be IDs, at most <paramref name="max"/> of them.
+        /// </summary>
+        public static List<string> ClampIds(IReadOnlyList<string> ids, int max)
+        {
+            var clamped = new List<string>();
+            if (ids == null) return clamped;
+
+            foreach (string id in ids)
+            {
+                if (clamped.Count >= max) break;
+                if (IsId(id)) clamped.Add(id);
+            }
+            return clamped;
+        }
+
         /// <summary>A clamped copy of <paramref name="song"/>, or <c>null</c> if it has no usable hash.</summary>
         public static SongInfo Clamp(SongInfo song)
         {

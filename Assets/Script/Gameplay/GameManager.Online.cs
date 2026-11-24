@@ -88,8 +88,10 @@ namespace YARG.Gameplay
         /// after the load. It is always false in practice mode and in a replay.
         /// </summary>
         /// <remarks>
-        /// In online play, the pause menu and the fail menu hide the items that leave friends behind: Restart,
-        /// Practice, Skip and the no fail items. The no fail setting has no effect (<see cref="NoFailMode"/>).
+        /// In online play, the pause menu and the fail menu hide the items that leave friends behind: Practice,
+        /// Skip and the no fail items. The no fail setting has no effect (<see cref="NoFailMode"/>). Restart
+        /// restarts the song for the whole band (<see cref="RequestOnlineRestart"/>): at once for the host, after
+        /// a vote for a joiner.
         /// </remarks>
         public bool IsOnlinePlay { get; private set; }
 
@@ -534,6 +536,17 @@ namespace YARG.Gameplay
         /// </summary>
         /// <returns>True if the dialog opened. Then the pause menu must not quit yet.</returns>
         public bool OfferLeaveWithParty() => Link?.OfferLeaveWithParty(this) ?? false;
+
+        /// <summary>
+        /// "Restart" in the pause menu or the fail menu, in online play: play the song again from the start with
+        /// the whole band. The host's restart happens at once. A joiner's asks the band: the song restarts once
+        /// everyone in it picks Restart. Then every game in this play loads the song again, and they start it
+        /// together.
+        /// </summary>
+        /// <returns>
+        /// False if the band can't restart (the session is gone). Then the menu restarts this game alone.
+        /// </returns>
+        public bool RequestOnlineRestart() => Link?.RequestRestart(this) ?? false;
 
         /// <summary>
         /// The input time at the moment of the call. <see cref="InputTime"/> is the time at the start of the

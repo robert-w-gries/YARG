@@ -53,6 +53,16 @@ namespace YARG.Integration.Link.Session
                     Apply(_coordinator.OnReady(member.Id, song, Present(), _clock()));
                     break;
 
+                case RestartRequestMessage restart when LinkLimits.Clamp(restart.Song) is { } song &&
+                    LinkLimits.IsId(restart.Play):
+                    Info($"{member} asked to restart {song}");
+                    Apply(_coordinator.OnRestart(member.Id, song, restart.Play, fromHost: false, Present(), _clock()));
+                    break;
+
+                case RestartWithdrawMessage withdraw when LinkLimits.IsId(withdraw.Hash):
+                    Apply(_coordinator.OnRestartWithdraw(member.Id, withdraw.Hash, Present()));
+                    break;
+
                 case DeclineMessage decline when decline.Hash == null || decline.Hash.Length <= LinkLimits.MAX_ID_LENGTH:
                     Info($"{member} declined: {LinkLimits.Clamp(decline.Reason, LinkLimits.MAX_SHORT_LENGTH)}");
                     Apply(_coordinator.OnDecline(member.Id, decline.Hash, Present()));
@@ -97,6 +107,26 @@ namespace YARG.Integration.Link.Session
                     double delay = Math.Max(0, start.DelayMs / 1000.0 - oneWay);
                     Info($"starting in {delay * 1000:0} ms (host lead {start.DelayMs} ms, one-way {oneWay * 1000:0} ms)");
                     Raise(() => StartScheduled?.Invoke(delay));
+                    break;
+                }
+
+                case RestartMessage restart when LinkLimits.Clamp(restart.Song) is { } song &&
+                    LinkLimits.IsId(restart.Member) && LinkLimits.IsId(restart.Play):
+                    Info($"restarting {song}");
+                    Raise(() => RestartRequested?.Invoke(song, restart.Member, restart.Play));
+                    break;
+
+                case RestartVoteMessage vote when LinkLimits.Clamp(vote.Song) is { } song:
+                {
+                    var status = new SyncStartCoordinator.RestartVote
+                    {
+                        Song = song,
+                        Yes = LinkLimits.ClampIds(vote.Yes, _options.MaxMembers + 1),
+                        Waiting = LinkLimits.ClampIds(vote.Waiting, _options.MaxMembers + 1),
+                        Ended = vote.Ended,
+                        Reason = LinkLimits.Clamp(vote.Reason, LinkLimits.MAX_REASON_LENGTH),
+                    };
+                    Raise(() => RestartVoteChanged?.Invoke(status));
                     break;
                 }
 

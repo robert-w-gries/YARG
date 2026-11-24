@@ -25,6 +25,9 @@ namespace YARG.Integration.Link.Session
         /// </summary>
         public const string SCENE_SCORE = "score";
 
+        /// <summary>Gameplay. A member there can be asked to restart its song.</summary>
+        public const string SCENE_GAMEPLAY = "gameplay";
+
         /// <summary>How often <see cref="OnTick"/> runs, in seconds.</summary>
         private const double TICK_INTERVAL = 1.0;
 
@@ -99,8 +102,20 @@ namespace YARG.Integration.Link.Session
         /// <summary>Everyone is ready: start playback this many seconds from now.</summary>
         public event Action<double> StartScheduled;
 
-        /// <summary>The start we reported ready for won't happen.</summary>
+        /// <summary>
+        /// The start we reported ready for won't happen, or the restart we asked for (<see cref="RequestRestart"/>)
+        /// was refused.
+        /// </summary>
         public event Action<string> StartCancelled;
+
+        /// <summary>
+        /// A member (song, member ID, play) asked to play the song again from the start. If we're in that play of
+        /// the song, load it again and <see cref="ReportReady"/>; else <see cref="ReportDecline"/>.
+        /// </summary>
+        public event Action<SongInfo, string, string> RestartRequested;
+
+        /// <summary>The restart vote of our song changed or ended (see <see cref="RequestRestart"/>).</summary>
+        public event Action<SyncStartCoordinator.RestartVote> RestartVoteChanged;
 
         /// <summary>Joiner only: lost the host, or the host refused us. The session is empty until rejoined.</summary>
         public event Action<LinkDisconnect> Disconnected;
@@ -142,7 +157,11 @@ namespace YARG.Integration.Link.Session
             _options = options ?? new LinkSessionOptions();
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
             Role = role;
-            _coordinator = new SyncStartCoordinator(_options.StartLeadSeconds, _options.StartTimeoutSeconds);
+            _coordinator = new SyncStartCoordinator(_options.StartLeadSeconds, _options.StartTimeoutSeconds)
+            {
+                RestartVoteSeconds = _options.RestartVoteSeconds,
+                RestartCooldownSeconds = _options.RestartCooldownSeconds,
+            };
             _nextTick = _clock() + TICK_INTERVAL;
         }
 

@@ -32,6 +32,15 @@ namespace YARG.Integration.Link.Session
         /// <summary>Stop waiting for members who haven't reported ready after this long (host only).</summary>
         public double StartTimeoutSeconds = 90.0;
 
+        /// <summary>
+        /// Host only: a joiner's restart vote that not everyone in its song agreed to within this long ends
+        /// without a restart.
+        /// </summary>
+        public double RestartVoteSeconds = 30.0;
+
+        /// <summary>Host only: a joiner can't open a restart vote within this long of opening its last one.</summary>
+        public double RestartCooldownSeconds = 30.0;
+
         /// <summary>Drop connections that haven't said hello within this long.</summary>
         public double HelloTimeoutSeconds = 10.0;
 

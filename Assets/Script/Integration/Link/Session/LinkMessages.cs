@@ -49,6 +49,10 @@ namespace YARG.Integration.Link.Session
             Register<LoadSongMessage>("load_song");
             Register<StartMessage>("start");
             Register<CancelMessage>("cancel");
+            Register<RestartRequestMessage>("restart_request");
+            Register<RestartMessage>("restart");
+            Register<RestartWithdrawMessage>("restart_withdraw");
+            Register<RestartVoteMessage>("restart_vote");
             Register<GameDataMessage>("game");
         }
 
@@ -259,6 +263,52 @@ namespace YARG.Integration.Link.Session
     public sealed class CancelMessage : LinkMessage
     {
         public string Reason;
+    }
+
+    /// <summary>
+    /// Joiner → host: play this song again from the start, with everyone in our play of it. This opens or joins
+    /// a vote: the song restarts once everyone in it asks.
+    /// </summary>
+    public sealed class RestartRequestMessage : LinkMessage
+    {
+        public SongInfo Song;
+
+        /// <summary>The play of the song the joiner is in. The session doesn't look inside it.</summary>
+        public string Play;
+    }
+
+    /// <summary>
+    /// Host → joiner in gameplay: a member asked to play the song again. Load it again and report ready if you're
+    /// in their play of it, else decline.
+    /// </summary>
+    public sealed class RestartMessage : LinkMessage
+    {
+        public SongInfo Song;
+
+        /// <summary>The member who asked.</summary>
+        public string Member;
+
+        /// <summary>The play of the song that <see cref="Member"/> is in.</summary>
+        public string Play;
+    }
+
+    /// <summary>Joiner → host: our song carried on, so the restart vote for it is over.</summary>
+    public sealed class RestartWithdrawMessage : LinkMessage
+    {
+        public string Hash;
+    }
+
+    /// <summary>
+    /// Host → joiner: the restart vote of the joiner's song changed or ended. See
+    /// <see cref="SyncStartCoordinator.RestartVote"/> for the fields.
+    /// </summary>
+    public sealed class RestartVoteMessage : LinkMessage
+    {
+        public SongInfo     Song;
+        public List<string> Yes;
+        public List<string> Waiting;
+        public bool         Ended;
+        public string       Reason;
     }
 
     /// <summary>

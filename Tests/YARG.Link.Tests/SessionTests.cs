@@ -227,6 +227,96 @@ namespace YARG.Link.Tests
             Assert.That(a.Cancels[0], Does.Contain("already starting"));
         }
 
+        /// <summary>A and B start <paramref name="song"/> together; the host sits it out in the menu.</summary>
+        private void JoinersPlayTogether(Member host, Member a, Member b, SongInfo song)
+        {
+            a.Session.SetLocalScene(LinkSession.SCENE_GAMEPLAY);
+            a.Session.ReportReady(song);
+            PumpUntil(() => host.LoadRequests.Count == 1 && b.LoadRequests.Count == 1);
+            host.Session.ReportDecline(song.Hash, "busy");
+            b.Session.SetLocalScene(LinkSession.SCENE_GAMEPLAY);
+            b.Session.ReportReady(song);
+            PumpUntil(() => a.Starts.Count == 1 && b.Starts.Count == 1);
+        }
+
+        [Test]
+        public void JoinersRestartOnceTheyAllAgree()
+        {
+            var (host, a, b) = ThreeMembers();
+            var song = new SongInfo("abc", "Song", "Artist");
+            var restarts = new List<(string Name, string Member, string Play)>();
+            var votes = new List<(string Name, SyncStartCoordinator.RestartVote Vote)>();
+            foreach (var m in new[] { host, a, b })
+            {
+                var name = m.Session.LocalName;
+                m.Session.RestartRequested += (_, member, play) => restarts.Add((name, member, play));
+                m.Session.RestartVoteChanged += vote => votes.Add((name, vote));
+            }
+            JoinersPlayTogether(host, a, b, song);
+
+            // A asks: B hears about the vote, and nobody restarts yet
+            a.Session.RequestRestart(song, "play-a");
+            PumpUntil(() => votes.Any(v => v.Name == "B"));
+            var vote = votes.Last(v => v.Name == "B").Vote;
+            Assert.That(vote.Yes, Is.EqualTo(new[] { a.Session.LocalMemberId }));
+            Assert.That(vote.Waiting, Is.EqualTo(new[] { b.Session.LocalMemberId }));
+            Assert.That(votes.Any(v => v.Name == "Host"), Is.False);
+            Assert.That(restarts, Is.Empty);
+
+            // B agrees: both restart A's play; the host, who isn't in the song, doesn't
+            b.Session.RequestRestart(song, "play-b");
+            PumpUntil(() => restarts.Count == 2);
+            string aId = a.Session.LocalMemberId;
+            Assert.That(restarts, Is.EquivalentTo(new[] { ("A", aId, "play-a"), ("B", aId, "play-a") }));
+
+            a.Session.ReportReady(song);
+            b.Session.ReportReady(song);
+            PumpUntil(() => a.Starts.Count == 2 && b.Starts.Count == 2);
+        }
+
+        [Test]
+        public void JoinerCannotRestartAloneOrBackToBack()
+        {
+            var (host, a, b) = ThreeMembers();
+            var song = new SongInfo("abc", "Song", "Artist");
+            var ended = new List<string>();
+            bool bHeard = false;
+            a.Session.RestartVoteChanged += vote => { if (vote.Ended) ended.Add(vote.Reason); };
+            b.Session.RestartVoteChanged += _ => bHeard = true;
+            JoinersPlayTogether(host, a, b, song);
+
+            // B's song carries on (it didn't agree)
+            a.Session.RequestRestart(song, "play-a");
+            PumpUntil(() => bHeard);
+            b.Session.WithdrawRestart(song.Hash);
+            PumpUntil(() => ended.Count == 1);
+            Assert.That(ended[0], Does.Contain("carried on"));
+
+            a.Session.RequestRestart(song, "play-a");
+            PumpUntil(() => a.Cancels.Count == 1);
+            Assert.That(a.Cancels[0], Does.Contain("ask again"));
+        }
+
+        [Test]
+        public void RestartDuringAStartIsCancelled()
+        {
+            var (host, a, b) = ThreeMembers();
+            var song = new SongInfo("abc", "Song", "Artist");
+            JoinersPlayTogether(host, a, b, song);
+
+            // C joins and picks another song, which waits for the host to choose a part
+            var c = Add(LinkRole.Join, "C");
+            c.Session.Join(host.Session.LocalTicket);
+            PumpUntil(() => host.HasMembers("A", "B", "C") && c.Session.IsConnected);
+            c.Session.SetLocalScene(LinkSession.SCENE_GAMEPLAY);
+            c.Session.ReportReady(new SongInfo("x", "X", "A"));
+            PumpUntil(() => host.LoadRequests.Count == 2);
+            a.Session.RequestRestart(song, "play-a");
+
+            PumpUntil(() => a.Cancels.Count == 1);
+            Assert.That(a.Cancels[0], Does.Contain("already starting"));
+        }
+
         [Test]
         public void JoiningUntilTheHostAccepts()
         {
