@@ -25,7 +25,10 @@ namespace YARG.Integration.Link.Session
         /// </summary>
         public const string SCENE_SCORE = "score";
 
-        /// <summary>Gameplay. A member there can be asked to restart its song.</summary>
+        /// <summary>
+        /// The scene name that a member in gameplay reports in its status. It is not how the game loads
+        /// gameplay. The host uses it to find the members that can restart a song.
+        /// </summary>
         public const string SCENE_GAMEPLAY = "gameplay";
 
         /// <summary>How often <see cref="OnTick"/> runs, in seconds.</summary>

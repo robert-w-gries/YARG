@@ -162,7 +162,10 @@ namespace YARG.Link.Tests
             c.OnRestart("b", Song("x"), "play-b", fromHost: false, present, 1);
 
             var a = c.OnRestart(LOCAL, Song("x"), "play-l", fromHost: true, present, 2);
-            Assert.That(a.FindAll(x => x.Command.Type == CommandType.Restart), Has.Count.EqualTo(3));
+            // Everyone restarts the host's play, not the play of b, who asked first
+            var restart = Command.Restart(Song("x"), LOCAL, "play-l");
+            Assert.That(Flat(a.FindAll(x => x.Command.Type == CommandType.Restart)),
+                Is.EquivalentTo(new[] { (LOCAL, restart), ("b", restart), ("c", restart) }));
             Assert.That(LastVote(a, "c").Ended, Is.True);
         }
 

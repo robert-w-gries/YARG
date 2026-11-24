@@ -71,11 +71,16 @@ namespace YARG.Integration.Link.Session
             return clamped;
         }
 
-        /// <summary>Whether <paramref name="id"/> can be a member ID, play ID or song hash.</summary>
+        /// <summary>
+        /// Check an ID that came from the network: a member ID, a play ID or a song hash. Returns true if the ID
+        /// is not empty and its length is not more than <see cref="MAX_ID_LENGTH"/>.
+        /// </summary>
         public static bool IsId(string id) => !string.IsNullOrEmpty(id) && id.Length <= MAX_ID_LENGTH;
 
         /// <summary>
-        /// The member IDs in <paramref name="ids"/> that can be IDs, at most <paramref name="max"/> of them.
+        /// Make a safe copy of a list of member IDs that came from the network. The copy keeps only the IDs that
+        /// <see cref="IsId"/> accepts, and not more than <paramref name="max"/> IDs. A bad or large message thus
+        /// cannot put bad IDs or too many IDs in the vote that the pause banner shows.
         /// </summary>
         public static List<string> ClampIds(IReadOnlyList<string> ids, int max)
         {

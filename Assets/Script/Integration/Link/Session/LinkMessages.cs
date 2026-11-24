@@ -273,7 +273,11 @@ namespace YARG.Integration.Link.Session
     {
         public SongInfo Song;
 
-        /// <summary>The play of the song the joiner is in. The session doesn't look inside it.</summary>
+        /// <summary>
+        /// The play ID of the joiner: a new ID that each game makes each time it starts the song. Friends know
+        /// it from the joiner's gameplay messages. The host sends it on in <see cref="RestartMessage.Play"/>, so
+        /// each game can make sure that it plays with the joiner now. The session does not read it.
+        /// </summary>
         public string Play;
     }
 

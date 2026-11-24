@@ -761,8 +761,9 @@ namespace YARG.Integration.Link
         /// (<see cref="OnRestartRequested"/>), and the games start it together as they do any song.
         /// </summary>
         /// <returns>
-        /// Whether the restart is on its way. If not (the session is gone, or the song isn't synced any more),
-        /// the game restarts on its own.
+        /// True if the band restarts, or if a vote is open. False if this game is not in a synced song now: the
+        /// session disconnected, or the song stopped its sync (for example, the host left). Then the pause menu
+        /// restarts this game alone, as offline.
         /// </returns>
         public bool RequestRestart(GameManager gm)
         {

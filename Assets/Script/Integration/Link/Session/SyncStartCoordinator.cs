@@ -137,6 +137,8 @@ namespace YARG.Integration.Link.Session
             public static Command RestartVoteChanged(RestartVote vote) =>
                 new(CommandType.RestartVote, vote.Song, 0, vote.Reason, vote: vote);
 
+            // Tests compare expected commands with the actual commands. Thus, compare all fields. A vote is a
+            // class, so compare it by reference.
             public bool Equals(Command other) => Type == other.Type && Equals(Song, other.Song) &&
                 DelayMs == other.DelayMs && Reason == other.Reason && Requester == other.Requester &&
                 Play == other.Play && ReferenceEquals(Vote, other.Vote);
@@ -190,18 +192,48 @@ namespace YARG.Integration.Link.Session
             public Vote Vote;
         }
 
+        /// <summary>One member's request to restart: who asked, and the play of the song it is in.</summary>
+        private readonly struct Ask
+        {
+            public readonly string Member;
+            public readonly string Play;
+
+            /// <summary>The host asked. The host's ask passes the vote alone.</summary>
+            public readonly bool FromHost;
+
+            public Ask(string member, string play, bool fromHost)
+            {
+                Member = member;
+                Play = play;
+                FromHost = fromHost;
+            }
+        }
+
+        /// <summary>The result of a restart vote at one moment. <see cref="DecideVote"/> sets it.</summary>
+        private enum VoteResult
+        {
+            /// <summary>The vote continues. Tell the group the current count.</summary>
+            Open,
+            /// <summary>Restart the song. Then the vote ends.</summary>
+            Passed,
+            /// <summary>Do not restart the song. The vote ends.</summary>
+            Failed,
+        }
+
         private sealed class Vote
         {
             public double Since;
 
-            /// <summary>Who asked, in order, with the play each one is in.</summary>
-            public readonly List<(string Member, string Play)> Yes = new();
+            /// <summary>Who asked, in order.</summary>
+            public readonly List<Ask> Yes = new();
 
             /// <summary>Who was last told about the vote, so the end reaches them too.</summary>
             public readonly HashSet<string> Told = new();
 
             /// <summary>What the group was last told, so it is only told about changes.</summary>
             public string LastSent;
+
+            public bool HasAsked(string member) => Yes.Any(a => a.Member == member);
         }
 
         private Pending _pending;
@@ -289,53 +321,60 @@ namespace YARG.Integration.Link.Session
             IReadOnlyList<Present> present, double now)
         {
             var actions = new List<Action>();
-            if (!_groupOf.TryGetValue(requester, out var group) || group.Song.Hash != song.Hash ||
-                !IsInSong(requester, present))
+            string refusal = RestartRefusal(requester, song, fromHost, present, now, out var group);
+            if (refusal != null)
             {
-                actions.Add(new Action(requester, Command.Cancel("you aren't playing that song with the band")));
+                actions.Add(new Action(requester, Command.Cancel(refusal)));
                 return actions;
             }
 
-            if (_pending != null)
+            if (group.Vote == null)
             {
-                actions.Add(new Action(requester, Command.Cancel($"\"{_pending.Song.Name}\" is already starting")));
-                return actions;
-            }
-
-            if (fromHost)
-            {
-                EndVote(group, null, actions);
-                BeginRestart(group, requester, play, present, now, actions);
-                return actions;
+                group.Vote = new Vote { Since = now };
+                if (!fromHost) _lastVoteAt[requester] = now;
             }
 
             var vote = group.Vote;
-            if (vote == null)
-            {
-                if (_lastVoteAt.TryGetValue(requester, out double last) && now - last < RestartCooldownSeconds)
-                {
-                    int wait = (int) Math.Ceiling(RestartCooldownSeconds - (now - last));
-                    actions.Add(new Action(requester, Command.Cancel(
-                        $"you asked a moment ago. You can ask again in {wait} s")));
-                    return actions;
-                }
-
-                _lastVoteAt[requester] = now;
-                vote = group.Vote = new Vote { Since = now };
-            }
-
-            if (!vote.Yes.Any(v => v.Member == requester))
-            {
-                vote.Yes.Add((requester, play));
-            }
-            else
+            if (vote.HasAsked(requester))
             {
                 // Asked again: tell them where the vote is, even if nothing changed
                 vote.LastSent = null;
             }
+            else
+            {
+                vote.Yes.Add(new Ask(requester, play, fromHost));
+            }
 
-            Evaluate(group, present, now, actions);
+            EvaluateRestart(group, present, now, actions);
             return actions;
+        }
+
+        /// <summary>
+        /// Find why the coordinator must refuse the restart request of <paramref name="requester"/>.
+        /// </summary>
+        /// <returns>The reason for the refusal, or <c>null</c> if the request is valid.</returns>
+        private string RestartRefusal(string requester, SongInfo song, bool fromHost, IReadOnlyList<Present> present,
+            double now, out Group group)
+        {
+            if (!IsInPlay(requester, song, present, out group))
+            {
+                return "you aren't playing that song with the band";
+            }
+
+            if (_pending != null)
+            {
+                return $"\"{_pending.Song.Name}\" is already starting";
+            }
+
+            // Only a joiner that opens a new vote has to wait. Anyone can join an open vote.
+            if (!fromHost && group.Vote == null &&
+                _lastVoteAt.TryGetValue(requester, out double last) && now - last < RestartCooldownSeconds)
+            {
+                int wait = (int) Math.Ceiling(RestartCooldownSeconds - (now - last));
+                return $"you asked a moment ago. You can ask again in {wait} s";
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -369,9 +408,12 @@ namespace YARG.Integration.Link.Session
         {
             var actions = new List<Action>();
 
+            // A vote can pass or fail without a new request: a member leaves the song, or the time limit
+            // ends. Thus, examine each open vote again. Many members share one group, so examine each group
+            // one time only.
             foreach (var group in _groupOf.Values.Distinct().ToList())
             {
-                if (group.Vote != null) Evaluate(group, present, now, actions);
+                if (group.Vote != null) EvaluateRestart(group, present, now, actions);
             }
 
             if (_pending == null) return actions;
@@ -420,11 +462,18 @@ namespace YARG.Integration.Link.Session
             foreach (string member in pending.Ready.Where(presentSet.Contains).OrderBy(m => m, StringComparer.Ordinal))
             {
                 actions.Add(new Action(member, Command.Start(delayMs)));
+
+                // Record who plays this song together. A restart request later uses this group.
                 JoinGroup(member, group, actions);
             }
             return actions;
         }
 
+        /// <summary>
+        /// Move <paramref name="member"/> into <paramref name="group"/>. A member is in one group only: the
+        /// group of the last start it took part in. If the old group has no members after this, its open vote
+        /// ends.
+        /// </summary>
         private void JoinGroup(string member, Group group, List<Action> actions)
         {
             if (_groupOf.TryGetValue(member, out var old))
@@ -436,63 +485,116 @@ namespace YARG.Integration.Link.Session
             _groupOf[member] = group;
         }
 
-        private static bool IsInSong(string member, IReadOnlyList<Present> present) =>
+        /// <summary>
+        /// Whether <paramref name="member"/> plays <paramref name="song"/> now, with the group that started it.
+        /// </summary>
+        private bool IsInPlay(string member, SongInfo song, IReadOnlyList<Present> present, out Group group) =>
+            _groupOf.TryGetValue(member, out group) && group.Song.Hash == song.Hash &&
             present.Any(x => x.Member == member && x.InSong);
 
         /// <summary>The members of <paramref name="group"/> in gameplay, in a fixed order.</summary>
-        private static List<string> Players(Group group, IReadOnlyList<Present> present) =>
+        private static List<string> SongPlayers(Group group, IReadOnlyList<Present> present) =>
             present.Where(x => x.InSong && group.Members.Contains(x.Member))
                 .Select(x => x.Member)
                 .OrderBy(m => m, StringComparer.Ordinal)
                 .ToList();
 
-        /// <summary>Restart the group's song if its vote passed, end it if it can't, else tell the group.</summary>
-        private void Evaluate(Group group, IReadOnlyList<Present> present, double now, List<Action> actions)
+        /// <summary>
+        /// Examine the open restart vote of <paramref name="group"/> and do what its result requires:
+        /// <list type="number">
+        /// <item>Remove the requests of members that are not in the song now.</item>
+        /// <item>Get the result from <see cref="DecideVote"/>.</item>
+        /// <item>If the vote passed, end it and restart the song.</item>
+        /// <item>If the vote failed, end it and tell the members why.</item>
+        /// <item>If the vote is open, tell the members the count, if it changed.</item>
+        /// </list>
+        /// </summary>
+        private void EvaluateRestart(Group group, IReadOnlyList<Present> present, double now, List<Action> actions)
         {
             var vote = group.Vote;
-            var players = Players(group, present);
+            var players = SongPlayers(group, present);
+            vote.Yes.RemoveAll(a => !players.Contains(a.Member));
 
-            // Who asked, and then left the song, doesn't count
-            vote.Yes.RemoveAll(v => !players.Contains(v.Member));
+            switch (DecideVote(vote, players, now, out string reason))
+            {
+                case VoteResult.Passed:
+                    // The host's request decides the restart. Else, the first request does.
+                    var ask = vote.Yes.FirstOrDefault(a => a.FromHost);
+                    if (ask.Member == null) ask = vote.Yes[0];
+                    EndVote(group, null, actions);
+                    BeginRestart(group, ask.Member, ask.Play, present, now, actions);
+                    break;
+
+                case VoteResult.Failed:
+                    EndVote(group, reason, actions);
+                    break;
+
+                default:
+                    TellVote(group, players, actions);
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Get the result of <paramref name="vote"/>. This is the only place that decides the result. The
+        /// rules, in this order:
+        /// <list type="number">
+        /// <item>If no member that asked is in the song now, the vote fails.</item>
+        /// <item>
+        /// If the host asked, or all <paramref name="songPlayers"/> asked, the vote passes. But if a different
+        /// start is pending, the vote fails, because only one start can be pending.
+        /// </item>
+        /// <item>If the vote is older than <see cref="RestartVoteSeconds"/>, it fails.</item>
+        /// <item>Else, the vote stays open.</item>
+        /// </list>
+        /// </summary>
+        /// <param name="reason">If the vote failed: why, for people. Else <c>null</c>.</param>
+        private VoteResult DecideVote(Vote vote, List<string> songPlayers, double now, out string reason)
+        {
+            reason = null;
 
             if (vote.Yes.Count == 0)
             {
-                EndVote(group, "everyone who asked left the song", actions);
-                return;
+                reason = "everyone who asked left the song";
+                return VoteResult.Failed;
             }
 
-            if (players.All(m => vote.Yes.Any(v => v.Member == m)))
+            bool agreed = vote.Yes.Any(a => a.FromHost) || songPlayers.All(vote.HasAsked);
+            if (agreed && _pending != null)
             {
-                if (_pending != null)
-                {
-                    EndVote(group, $"\"{_pending.Song.Name}\" is already starting", actions);
-                    return;
-                }
-
-                var (requester, play) = vote.Yes[0];
-                EndVote(group, null, actions);
-                BeginRestart(group, requester, play, present, now, actions);
-                return;
+                reason = $"\"{_pending.Song.Name}\" is already starting";
+                return VoteResult.Failed;
+            }
+            if (agreed)
+            {
+                return VoteResult.Passed;
             }
 
             if (now - vote.Since >= RestartVoteSeconds)
             {
-                EndVote(group, "not everyone agreed in time", actions);
-                return;
+                reason = "not everyone agreed in time";
+                return VoteResult.Failed;
             }
 
+            return VoteResult.Open;
+        }
+
+        /// <summary>Tell the members of the group in the song the count of the open vote, if it changed.</summary>
+        private static void TellVote(Group group, List<string> songPlayers, List<Action> actions)
+        {
+            var vote = group.Vote;
             var status = new RestartVote
             {
                 Song = group.Song,
-                Yes = vote.Yes.Select(v => v.Member).ToList(),
-                Waiting = players.Where(m => vote.Yes.All(v => v.Member != m)).ToList(),
+                Yes = vote.Yes.Select(a => a.Member).ToList(),
+                Waiting = songPlayers.Where(m => !vote.HasAsked(m)).ToList(),
             };
             string key = string.Join(",", status.Yes) + "|" + string.Join(",", status.Waiting);
             if (key == vote.LastSent) return;
 
             vote.LastSent = key;
-            vote.Told.UnionWith(players);
-            foreach (string member in players)
+            vote.Told.UnionWith(songPlayers);
+            foreach (string member in songPlayers)
             {
                 actions.Add(new Action(member, Command.RestartVoteChanged(status)));
             }
@@ -500,7 +602,7 @@ namespace YARG.Integration.Link.Session
 
         /// <summary>
         /// End the group's vote, if it has one, and tell everyone who heard about it. A <c>null</c>
-        /// <paramref name="reason"/> means the song restarts.
+        /// <paramref name="reason"/> means the song restarts. Like all of this class, it runs on the host only.
         /// </summary>
         private static void EndVote(Group group, string reason, List<Action> actions)
         {
@@ -511,7 +613,7 @@ namespace YARG.Integration.Link.Session
             var status = new RestartVote
             {
                 Song = group.Song,
-                Yes = vote.Yes.Select(v => v.Member).ToList(),
+                Yes = vote.Yes.Select(a => a.Member).ToList(),
                 Ended = true,
                 Reason = reason,
             };
@@ -525,7 +627,7 @@ namespace YARG.Integration.Link.Session
         private void BeginRestart(Group group, string requester, string play, IReadOnlyList<Present> present,
             double now, List<Action> actions)
         {
-            var players = new HashSet<string>(Players(group, present));
+            var players = new HashSet<string>(SongPlayers(group, present));
             _pending = new Pending { Song = group.Song, Since = now, Restart = true };
             foreach (var x in present)
             {
